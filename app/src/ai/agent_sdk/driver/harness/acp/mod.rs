@@ -25,7 +25,7 @@ mod policy;
 mod protocol;
 
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -72,7 +72,7 @@ use super::gemini::{prepare_gemini_environment_config, publish_skills_for_gemini
 use super::harness_persistence::{
     HarnessPersistence, PersistenceOutcome, save_transcript_and_conversation_data,
 };
-use super::pi::prepare_pi_environment_config;
+use super::pi::{PI_CODING_AGENT_DIR_ENV, prepare_pi_environment_config};
 use super::transcript_persistence::{
     UploadedTranscriptUsage, capture_transcript_with_retry, upload_captured_transcript,
 };
@@ -138,19 +138,7 @@ impl AcpHarness {
         resolved_secrets: &HashMap<String, ManagedSecretValue>,
         resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
         third_party_harness_model_config: Option<&HarnessModelConfig>,
-    ) -> Result<Vec<(String, String)>> {
-        if self.harness == Harness::Pi {
-            return prepare_pi_environment_config(
-                workspace_root,
-                harness_working_dir,
-                system_prompt,
-                resolved_env_vars,
-                resolved_mcp_servers,
-                resolved_secrets,
-                third_party_harness_model_config,
-                skill_dirs,
-            );
-        }
+    ) -> Result<()> {
         match self.harness {
             Harness::Claude => prepare_claude_environment_config(
                 workspace_root,
@@ -186,9 +174,18 @@ impl AcpHarness {
                     has_deferred_repositories,
                 )
             }
-            Harness::Pi | Harness::Oz | Harness::OpenCode | Harness::Unknown => Ok(()),
-        }?;
-        Ok(Vec::new())
+            Harness::Pi => prepare_pi_environment_config(
+                workspace_root,
+                harness_working_dir,
+                system_prompt,
+                resolved_env_vars,
+                resolved_mcp_servers,
+                resolved_secrets,
+                third_party_harness_model_config,
+                skill_dirs,
+            ),
+            Harness::Oz | Harness::OpenCode | Harness::Unknown => Ok(()),
+        }
     }
 }
 
@@ -252,7 +249,7 @@ impl ThirdPartyHarness for AcpHarness {
         resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
         third_party_harness_model_config: Option<&HarnessModelConfig>,
     ) -> Result<Box<dyn HarnessRunner>, AgentDriverError> {
-        let env = self.prepare_harness_environment(
+        self.prepare_harness_environment(
             system_prompt,
             workspace_root,
             harness_working_dir,
@@ -267,8 +264,6 @@ impl ThirdPartyHarness for AcpHarness {
             harness: self.harness.to_string(),
             error,
         })?;
-        let mut launch = self.launch.clone();
-        launch.env.extend(env);
 
         // ACP has no system-prompt channel of its own, so every server-composed block that the
         // harness bootstrap did not already place is folded into the user turn ahead of the
@@ -302,7 +297,7 @@ impl ThirdPartyHarness for AcpHarness {
         let (save_request_tx, save_request_rx) = async_channel::unbounded();
         Ok(Box::new(AcpHarnessRunner {
             harness: self.harness,
-            launch,
+            launch: self.launch.clone(),
             user_prompt: prompt.to_owned(),
             prompt_text,
             harness_working_dir: harness_working_dir.to_path_buf(),
@@ -317,6 +312,10 @@ impl ThirdPartyHarness for AcpHarness {
             conversation: OnceLock::new(),
             boundary_snapshot: Arc::default(),
             cli_session: OnceLock::new(),
+            cli_transcript_root: resolved_env_vars
+                .get(OsStr::new(PI_CODING_AGENT_DIR_ENV))
+                .filter(|_| self.harness == Harness::Pi)
+                .map(PathBuf::from),
             // Save points are raised at request-stream boundaries, which is the cadence the
             // server persists its own conversations at, so they are uploaded as they come.
             persistence: HarnessPersistence::default().with_save_debounce(Duration::ZERO),
@@ -375,6 +374,7 @@ pub(crate) struct AcpHarnessRunner {
     boundary_snapshot: Arc<Mutex<Option<Vec<u8>>>>,
     /// Set after the handshake for harnesses whose CLI transcript is uploaded.
     cli_session: OnceLock<CliSession>,
+    cli_transcript_root: Option<PathBuf>,
     persistence: HarnessPersistence,
     /// Save points raised by the turn driver at request-stream and turn boundaries.
     save_request_tx: async_channel::Sender<SavePoint>,
@@ -420,12 +420,9 @@ impl AcpHarnessRunner {
             return;
         };
         let root = match self
-            .launch
-            .env
-            .iter()
-            .find(|(name, _)| name == "PI_CODING_AGENT_DIR")
-            .filter(|_| kind == CliTranscriptKind::Pi)
-            .map(|(_, value)| Ok(PathBuf::from(value)))
+            .cli_transcript_root
+            .as_ref()
+            .map(|root| Ok(root.clone()))
             .unwrap_or_else(|| kind.root())
         {
             Ok(root) => root,
@@ -609,11 +606,7 @@ impl HarnessRunner for AcpHarnessRunner {
             .await
             .map_err(|_| AgentDriverError::InvalidRuntimeState)?;
 
-        let listener = BridgeListener::bind(
-            &self.launch.program,
-            &self.launch.args,
-            &self.launch.env,
-        )
+        let listener = BridgeListener::bind(&self.launch.program, &self.launch.args)
             .map_err(|error| self.setup_failed(format!("{error:#}")))?;
         let command = bridge_command(listener.launch_file(), shell_family)
             .map_err(|error| self.setup_failed(format!("{error:#}")))?;

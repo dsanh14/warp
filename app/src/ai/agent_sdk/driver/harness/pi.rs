@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow};
 use serde_json::{Map, Value, json};
+use tempfile::Builder;
 use warp_managed_secrets::{ManagedSecretValue, provider_api_key_env_name};
 
 use super::JSONMCPServer;
@@ -15,6 +16,30 @@ use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::ai::mcp::JSONTransportType;
 
 const PI_PACKAGE_DIR: &str = "/mnt/pi-cli-sidecar/usr/local/lib/pi-packages";
+pub(super) const PI_CODING_AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";
+
+pub(in super::super) fn pi_env_vars() -> Result<HashMap<OsString, OsString>> {
+    let agent_dir = Builder::new().prefix("oz-pi-").tempdir()?;
+    let session_dir = agent_dir.path().join("sessions");
+    fs::create_dir_all(&session_dir)?;
+    let agent_dir = agent_dir.keep();
+    Ok(HashMap::from([
+        (
+            OsString::from(PI_CODING_AGENT_DIR_ENV),
+            agent_dir.into_os_string(),
+        ),
+        (
+            OsString::from("PI_CODING_AGENT_SESSION_DIR"),
+            session_dir.into_os_string(),
+        ),
+        (
+            OsString::from("PI_PACKAGE_DIR"),
+            OsString::from(PI_PACKAGE_DIR),
+        ),
+        (OsString::from("PI_OFFLINE"), OsString::from("1")),
+        (OsString::from("PI_SKIP_VERSION_CHECK"), OsString::from("1")),
+    ]))
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_pi_environment_config(
@@ -26,17 +51,18 @@ pub(super) fn prepare_pi_environment_config(
     resolved_secrets: &HashMap<String, ManagedSecretValue>,
     third_party_harness_model_config: Option<&HarnessModelConfig>,
     skill_dirs: &[PathBuf],
-) -> Result<Vec<(String, String)>> {
-    let agent_dir = tempfile::Builder::new()
-        .prefix("oz-pi-")
-        .tempdir()?
-        .keep();
-    let session_dir = agent_dir.join("sessions");
-    fs::create_dir_all(&session_dir)?;
+) -> Result<()> {
+    let agent_dir = resolved_env_vars
+        .get(OsStr::new(PI_CODING_AGENT_DIR_ENV))
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("{PI_CODING_AGENT_DIR_ENV} was not initialized"))?;
     // Pi installs extensions under its agent directory even when its installation assets are
     // read-only. Seed the writable npm tree so loading the pinned adapter never needs a download.
-    copy_writable_tree(&Path::new(PI_PACKAGE_DIR).join("npm"), &agent_dir.join("npm"))
-        .context("Failed to seed Pi adapter packages")?;
+    copy_writable_tree(
+        &Path::new(PI_PACKAGE_DIR).join("npm"),
+        &agent_dir.join("npm"),
+    )
+    .context("Failed to seed Pi adapter packages")?;
     prepare_pi_settings(
         &agent_dir.join("settings.json"),
         workspace_root,
@@ -58,7 +84,8 @@ pub(super) fn prepare_pi_environment_config(
             provider,
             api_key,
             base_url: Some(base_url),
-        } = secret else {
+        } = secret
+        else {
             continue;
         };
         let env_name = provider_api_key_env_name(provider)
@@ -84,16 +111,7 @@ pub(super) fn prepare_pi_environment_config(
             "Failed to serialize Pi model endpoint overrides",
         )?;
     }
-    Ok(vec![
-        ("PI_CODING_AGENT_DIR".to_owned(), agent_dir.display().to_string()),
-        (
-            "PI_CODING_AGENT_SESSION_DIR".to_owned(),
-            session_dir.display().to_string(),
-        ),
-        ("PI_PACKAGE_DIR".to_owned(), PI_PACKAGE_DIR.to_owned()),
-        ("PI_OFFLINE".to_owned(), "1".to_owned()),
-        ("PI_SKIP_VERSION_CHECK".to_owned(), "1".to_owned()),
-    ])
+    Ok(())
 }
 
 fn prepare_pi_settings(
@@ -167,7 +185,9 @@ fn pi_mcp_config(servers: &HashMap<String, JSONMCPServer>) -> Value {
         .iter()
         .map(|(name, server)| {
             let config = match &server.transport_type {
-                JSONTransportType::CLIServer { command, args, env, .. } => {
+                JSONTransportType::CLIServer {
+                    command, args, env, ..
+                } => {
                     json!({"command": command, "args": args, "env": env})
                 }
                 JSONTransportType::SSEServer { url, headers } => {

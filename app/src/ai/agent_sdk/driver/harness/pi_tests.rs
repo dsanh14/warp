@@ -1,11 +1,34 @@
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
+use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use super::{pi_mcp_config, prepare_pi_settings, prepare_pi_system_prompt};
+use super::{
+    PI_CODING_AGENT_DIR_ENV, pi_env_vars, pi_mcp_config, prepare_pi_settings,
+    prepare_pi_system_prompt,
+};
 use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::ai::mcp::JSONMCPServer;
+#[test]
+fn environment_allocates_isolated_session_directories() {
+    let first = pi_env_vars().unwrap();
+    let second = pi_env_vars().unwrap();
+    let first_agent_dir = PathBuf::from(&first[OsStr::new(PI_CODING_AGENT_DIR_ENV)]);
+    let second_agent_dir = PathBuf::from(&second[OsStr::new(PI_CODING_AGENT_DIR_ENV)]);
+    let first_session_dir = PathBuf::from(&first[OsStr::new("PI_CODING_AGENT_SESSION_DIR")]);
+    let second_session_dir = PathBuf::from(&second[OsStr::new("PI_CODING_AGENT_SESSION_DIR")]);
+
+    assert_ne!(first_agent_dir, second_agent_dir);
+    assert_eq!(first_session_dir, first_agent_dir.join("sessions"));
+    assert_eq!(second_session_dir, second_agent_dir.join("sessions"));
+    assert!(first_session_dir.is_dir());
+    assert!(second_session_dir.is_dir());
+
+    fs::remove_dir_all(first_agent_dir).unwrap();
+    fs::remove_dir_all(second_agent_dir).unwrap();
+}
 
 #[test]
 fn settings_preserve_existing_values_and_add_only_external_skills() {

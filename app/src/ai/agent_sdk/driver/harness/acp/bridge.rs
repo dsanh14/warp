@@ -89,8 +89,6 @@ pub(crate) struct BridgeLaunch {
     pub token: String,
     /// The agent command line.
     pub agent: Vec<String>,
-    #[serde(default)]
-    pub env: Vec<(String, String)>,
 }
 
 /// Builds the shell command that launches the agent described by `launch_file` through the
@@ -134,13 +132,13 @@ pub(crate) fn run_bridge(launch_file: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use command::unix::CommandExt as _;
-        let mut command = exec_agent_command(stream, program, args, &launch.env)?;
+        let mut command = exec_agent_command(stream, program, args)?;
         let error = command.exec();
         Err(anyhow!(error)).with_context(|| format!("Failed to exec ACP agent `{program}`"))
     }
     #[cfg(not(unix))]
     {
-        let status = relay_agent(stream, program, args, &launch.env, AGENT_EXIT_GRACE)?;
+        let status = relay_agent(stream, program, args, AGENT_EXIT_GRACE)?;
         std::process::exit(status.code().unwrap_or(1))
     }
 }
@@ -276,7 +274,6 @@ fn exec_agent_command(
     stream: BridgeStream,
     program: &str,
     args: &[String],
-    env: &[(String, String)],
 ) -> Result<command::blocking::Command> {
     use std::os::fd::OwnedFd;
     use std::process::Stdio;
@@ -287,7 +284,6 @@ fn exec_agent_command(
     let mut command = command::blocking::Command::new(program);
     command
         .args(args)
-        .envs(env.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::from(OwnedFd::from(stdin)))
         .stdout(Stdio::from(OwnedFd::from(stream)));
     Ok(command)
@@ -306,7 +302,6 @@ fn relay_agent(
     stream: BridgeStream,
     program: &str,
     args: &[String],
-    env: &[(String, String)],
     exit_grace: Duration,
 ) -> Result<std::process::ExitStatus> {
     use std::process::Stdio;
@@ -319,7 +314,6 @@ fn relay_agent(
         .ok_or_else(|| anyhow!("ACP agent `{program}` was not found on PATH"))?;
     let mut child = command::blocking::Command::new(program_path.as_ref())
         .args(args)
-        .envs(env.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -446,7 +440,7 @@ pub(crate) struct BridgeListener {
 impl BridgeListener {
     /// Starts listening and writes the launch file, with a fresh token, for the agent command
     /// `program` `args`.
-    pub(crate) fn bind(program: &str, args: &[String], env: &[(String, String)]) -> Result<Self> {
+    pub(crate) fn bind(program: &str, args: &[String]) -> Result<Self> {
         // The token is only as private as this directory, and on Unix so is the socket.
         // `tempfile` creates it mode 0700 there; on Windows it inherits the ACL of `%TEMP%`,
         // which is per-user by default.
@@ -462,7 +456,6 @@ impl BridgeListener {
             agent: std::iter::once(program.to_owned())
                 .chain(args.iter().cloned())
                 .collect(),
-            env: env.to_vec(),
         };
         let launch_file = dir.path().join(LAUNCH_FILE_NAME);
         std::fs::write(&launch_file, serde_json::to_vec(&launch)?).with_context(|| {

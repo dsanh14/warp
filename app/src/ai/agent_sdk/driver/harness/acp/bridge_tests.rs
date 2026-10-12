@@ -5,7 +5,6 @@ use std::time::Duration;
 use futures::executor::block_on;
 use futures::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use instant::Instant;
-use serde_json::Value;
 use warp_util::path::ShellFamily;
 
 use super::{
@@ -50,7 +49,7 @@ fn bridge_command_uses_the_current_executable() {
 #[test]
 fn launch_file_carries_the_agent_command_and_a_fresh_token() {
     let listener =
-        BridgeListener::bind("npx", &["-y".into(), "@zed-industries/codex-acp".into()], &[]).unwrap();
+        BridgeListener::bind("npx", &["-y".into(), "@zed-industries/codex-acp".into()]).unwrap();
     let launch = read_launch(listener.launch_file()).unwrap();
     assert_eq!(launch.agent, ["npx", "-y", "@zed-industries/codex-acp"]);
     assert_eq!(launch.endpoint, listener.endpoint);
@@ -58,7 +57,7 @@ fn launch_file_carries_the_agent_command_and_a_fresh_token() {
     assert!(launch.token.len() <= MAX_TOKEN_LINE);
     assert!(launch.token.bytes().all(|b| b.is_ascii_hexdigit()));
 
-    let other = BridgeListener::bind("cat", &[], &[]).unwrap();
+    let other = BridgeListener::bind("cat", &[]).unwrap();
     assert_ne!(
         read_launch(other.launch_file()).unwrap().token,
         launch.token
@@ -68,7 +67,7 @@ fn launch_file_carries_the_agent_command_and_a_fresh_token() {
 #[cfg(unix)]
 #[test]
 fn unix_hosts_listen_on_a_socket_file_in_the_private_directory() {
-    let listener = BridgeListener::bind("cat", &[], &[]).unwrap();
+    let listener = BridgeListener::bind("cat", &[]).unwrap();
     let BridgeEndpoint::Unix(path) = &listener.endpoint else {
         panic!(
             "expected a Unix socket endpoint, got {:?}",
@@ -82,7 +81,7 @@ fn unix_hosts_listen_on_a_socket_file_in_the_private_directory() {
 #[cfg(not(unix))]
 #[test]
 fn non_unix_hosts_listen_on_loopback_tcp() {
-    let listener = BridgeListener::bind("cat", &[], &[]).unwrap();
+    let listener = BridgeListener::bind("cat", &[]).unwrap();
     let BridgeEndpoint::Tcp(address) = &listener.endpoint else {
         panic!("expected a TCP endpoint, got {:?}", listener.endpoint);
     };
@@ -173,10 +172,10 @@ fn connect_while_accepting(
 #[cfg(unix)]
 #[test]
 fn exec_style_agent_talks_to_the_driver_over_the_socket() {
-    let listener = BridgeListener::bind("cat", &[], &[]).unwrap();
+    let listener = BridgeListener::bind("cat", &[]).unwrap();
     let (connected, accepted) = connect_while_accepting(&listener, &listener.token);
     // Stand in for the exec'd agent: spawn `cat` with the socket as its stdio.
-    let mut agent = super::exec_agent_command(connected.unwrap(), "cat", &[], &[])
+    let mut agent = super::exec_agent_command(connected.unwrap(), "cat", &[])
         .unwrap()
         .spawn()
         .unwrap();
@@ -189,10 +188,10 @@ fn exec_style_agent_talks_to_the_driver_over_the_socket() {
 #[test]
 fn relayed_agent_talks_to_the_driver_over_the_socket() {
     let (program, args) = echo_command();
-    let listener = BridgeListener::bind(program, &args, &[]).unwrap();
+    let listener = BridgeListener::bind(program, &args).unwrap();
     let (connected, accepted) = connect_while_accepting(&listener, &listener.token);
     let relay = std::thread::spawn(move || {
-        super::relay_agent(connected.unwrap(), program, &args, &[], Duration::from_secs(10))
+        super::relay_agent(connected.unwrap(), program, &args, Duration::from_secs(10))
     });
 
     let (reader, writer) = accepted.unwrap();
@@ -201,63 +200,13 @@ fn relayed_agent_talks_to_the_driver_over_the_socket() {
 }
 
 #[test]
-fn bridged_agent_receives_launch_environment_without_shell_expansion() {
-    let args = vec![
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/ai/agent_sdk/driver/harness/acp/testdata/fake_agent.mjs")
-            .display()
-            .to_string(),
-    ];
-    let env = vec![("ACP_TEST_ENV".to_owned(), "literal $HOME ; value".to_owned())];
-    let listener = BridgeListener::bind("node", &args, &env).unwrap();
-    let launch = read_launch(listener.launch_file()).unwrap();
-    let (connected, accepted) = connect_while_accepting(&listener, &listener.token);
-    let agent = std::thread::spawn(move || {
-        #[cfg(unix)]
-        {
-            super::exec_agent_command(connected.unwrap(), "node", &args, &launch.env)
-                .unwrap()
-                .spawn()
-                .unwrap()
-                .wait()
-                .unwrap()
-        }
-        #[cfg(not(unix))]
-        {
-            super::relay_agent(
-                connected.unwrap(),
-                "node",
-                &args,
-                &launch.env,
-                Duration::from_secs(10),
-            )
-            .unwrap()
-        }
-    });
-    let (reader, mut writer) = accepted.unwrap();
-    block_on(async {
-        writer
-            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"test/environment\"}\n")
-            .await
-            .unwrap();
-        writer.flush().await.unwrap();
-        let mut line = String::new();
-        BufReader::new(reader).read_line(&mut line).await.unwrap();
-        let response: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(response["result"]["value"], "literal $HOME ; value");
-        writer.close().await.unwrap();
-    });
-    assert!(agent.join().unwrap().success());
-}
-
-#[test]
 fn relay_kills_an_agent_that_ignores_eof_after_the_grace_period() {
     let (program, args) = ignores_eof_command();
-    let listener = BridgeListener::bind(program, &args, &[]).unwrap();
+    let listener = BridgeListener::bind(program, &args).unwrap();
     let (connected, accepted) = connect_while_accepting(&listener, &listener.token);
     let grace = Duration::from_millis(200);
     let relay =
-        std::thread::spawn(move || super::relay_agent(connected.unwrap(), program, &args, &[], grace));
+        std::thread::spawn(move || super::relay_agent(connected.unwrap(), program, &args, grace));
 
     let (reader, mut writer) = accepted.unwrap();
     let closed_at = Instant::now();
@@ -271,10 +220,10 @@ fn relay_kills_an_agent_that_ignores_eof_after_the_grace_period() {
 #[test]
 fn relay_finishes_when_the_agent_exits_before_the_driver_closes_the_socket() {
     let (program, args) = exits_immediately_command();
-    let listener = BridgeListener::bind(program, &args, &[]).unwrap();
+    let listener = BridgeListener::bind(program, &args).unwrap();
     let (connected, accepted) = connect_while_accepting(&listener, &listener.token);
     let relay = std::thread::spawn(move || {
-        super::relay_agent(connected.unwrap(), program, &args, &[], Duration::from_secs(10))
+        super::relay_agent(connected.unwrap(), program, &args, Duration::from_secs(10))
     });
 
     // The driver keeps both halves open; the relay must still return once the agent is gone.
@@ -286,7 +235,7 @@ fn relay_finishes_when_the_agent_exits_before_the_driver_closes_the_socket() {
 
 #[test]
 fn impostors_are_told_they_are_rejected_and_the_genuine_bridge_is_accepted() {
-    let listener = BridgeListener::bind("cat", &[], &[]).unwrap();
+    let listener = BridgeListener::bind("cat", &[]).unwrap();
     let endpoint = read_launch(listener.launch_file()).unwrap().endpoint;
     let (impostor_verdict, genuine, accepted) = std::thread::scope(|scope| {
         let impostor = scope.spawn(|| {
@@ -321,7 +270,7 @@ fn impostors_are_told_they_are_rejected_and_the_genuine_bridge_is_accepted() {
 
 #[test]
 fn bridge_fails_clearly_when_its_token_is_rejected() {
-    let listener = BridgeListener::bind("cat", &[], &[]).unwrap();
+    let listener = BridgeListener::bind("cat", &[]).unwrap();
     let (connected, accepted) = connect_while_accepting(&listener, "not-the-token");
     let Err(error) = connected else {
         panic!("the bridge should not have been accepted");
@@ -336,7 +285,7 @@ fn bridge_fails_clearly_when_its_token_is_rejected() {
 
 #[test]
 fn accept_times_out_when_no_agent_connects() {
-    let listener = BridgeListener::bind("cat", &[], &[]).unwrap();
+    let listener = BridgeListener::bind("cat", &[]).unwrap();
     let Err(error) = block_on(listener.accept(Duration::from_millis(100))) else {
         panic!("accept should time out without a client");
     };

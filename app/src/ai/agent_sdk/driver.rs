@@ -52,8 +52,8 @@ use crate::ai::agent_sdk::driver::harness::exit_escalation::{
 };
 use crate::ai::agent_sdk::driver::harness::{
     HarnessCleanupDisposition, HarnessKind, HarnessRunner, ResumePayload, SavePoint,
-    ThirdPartyHarness, ThirdPartyHarnessTelemetryEvent, harness_model_env_vars, renders_natively,
-    task_env_vars,
+    ThirdPartyHarness, ThirdPartyHarnessTelemetryEvent, harness_model_env_vars, pi_env_vars,
+    renders_natively, task_env_vars,
 };
 use crate::ai::agent_sdk::environment_snapshot::{
     EnvironmentSnapshot, EnvironmentSnapshotReporter,
@@ -1231,6 +1231,14 @@ impl AgentDriver {
             selected_harness,
             third_party_harness_model_config.as_ref(),
         ));
+        if selected_harness == Harness::Pi {
+            env_vars.extend(pi_env_vars().map_err(|error| {
+                AgentDriverError::HarnessConfigSetupFailed {
+                    harness: selected_harness.to_string(),
+                    error,
+                }
+            })?);
+        }
         if let Some(dirs) = &workspace.factory_skill_dirs {
             env_vars.insert(
                 OsString::from(WARP_SKILL_DIRS_ENV),
@@ -5074,11 +5082,11 @@ fn typed_secret_env_names(secrets: &HashMap<String, ManagedSecretValue>) -> Hash
 fn typed_secret_entries(secret: &ManagedSecretValue) -> Vec<(&'static str, &str)> {
     match secret {
         ManagedSecretValue::RawValue { .. } => vec![],
-        ManagedSecretValue::ProviderApiKey { provider, api_key, .. } => {
-            provider_api_key_env_name(provider)
-                .map(|name| vec![(name, api_key.as_str())])
-                .unwrap_or_default()
-        }
+        ManagedSecretValue::ProviderApiKey {
+            provider, api_key, ..
+        } => provider_api_key_env_name(provider)
+            .map(|name| vec![(name, api_key.as_str())])
+            .unwrap_or_default(),
         ManagedSecretValue::AnthropicApiKey { api_key } => {
             vec![("ANTHROPIC_API_KEY", api_key.as_str())]
         }

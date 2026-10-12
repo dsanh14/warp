@@ -182,8 +182,6 @@ async function handleRequest(message) {
     case "session/new":
       sessionId = `sess_${Date.now()}`;
       return { sessionId };
-    case "test/environment":
-      return { value: process.env.ACP_TEST_ENV };
     case "session/prompt":
       return runTurn(message.params.prompt ?? []);
     case "session/cancel":
