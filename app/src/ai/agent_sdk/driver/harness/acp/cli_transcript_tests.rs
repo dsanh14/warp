@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use serde_json::json;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -60,4 +61,43 @@ fn claude_transcript_is_the_project_session_file_named_after_the_acp_session_id(
         None,
         "the transcript is keyed by the session's working directory"
     );
+}
+
+#[test]
+fn pi_fallback_prefers_session_identity_over_newer_same_cwd_files() {
+    let dir = TempDir::new().unwrap();
+    let sessions = dir.path().join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let cwd = Path::new("/workspace/repo");
+    let session_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let transcript =
+        sessions.join("2026-10-12T10-00-00-000Z_550e8400-e29b-41d4-a716-446655440000.jsonl");
+    let body = json!({"type": "session", "id": session_id, "cwd": "/workspace/repo"}).to_string();
+    fs::write(&transcript, &body).unwrap();
+    fs::write(
+        sessions.join("newer.jsonl"),
+        json!({
+            "type": "session",
+            "id": "550e8400-e29b-41d4-a716-446655440001",
+            "cwd": "/workspace/repo"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let kind = CliTranscriptKind::Pi;
+    assert_eq!(
+        kind.locate(dir.path(), cwd, session_id),
+        Some(transcript.clone())
+    );
+    assert_eq!(
+        kind.locate(dir.path(), Path::new("/elsewhere"), session_id),
+        None
+    );
+    assert!(kind.locate(dir.path(), cwd, Uuid::new_v4()).is_some());
+    let capture = kind
+        .capture(session_id, &transcript, dir.path(), cwd, true, None)
+        .unwrap();
+    assert_eq!(capture.transcript_body, body.as_bytes());
+    assert!(capture.usage_request.is_none());
 }

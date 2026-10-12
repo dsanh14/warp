@@ -22,6 +22,12 @@ pub enum ManagedSecretValue {
     RawValue {
         value: String,
     },
+    ProviderApiKey {
+        provider: String,
+        api_key: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
+    },
     AnthropicApiKey {
         api_key: String,
     },
@@ -57,6 +63,49 @@ pub enum ManagedSecretValue {
         registry_host: String,
         role_arn: String,
     },
+}
+
+/// Native API-key environment variable for a provider recognized by Pi.
+pub fn provider_api_key_env_name(provider: &str) -> Option<&'static str> {
+    match provider {
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "openai" => Some("OPENAI_API_KEY"),
+        "azure" => Some("AZURE_OPENAI_API_KEY"),
+        "google" => Some("GEMINI_API_KEY"),
+        "google-vertex" => Some("GOOGLE_CLOUD_API_KEY"),
+        "github-copilot" => Some("COPILOT_GITHUB_TOKEN"),
+        "ant-ling" => Some("ANT_LING_API_KEY"),
+        "qwen-token-plan" | "qwen-token-plan-individual" => Some("QWEN_TOKEN_PLAN_API_KEY"),
+        "qwen-token-plan-cn" => Some("QWEN_TOKEN_PLAN_CN_API_KEY"),
+        "nvidia" => Some("NVIDIA_API_KEY"),
+        "deepseek" => Some("DEEPSEEK_API_KEY"),
+        "groq" => Some("GROQ_API_KEY"),
+        "cerebras" => Some("CEREBRAS_API_KEY"),
+        "xai" => Some("XAI_API_KEY"),
+        "typesafe" => Some("TYPESAFE_API_KEY"),
+        "radius" => Some("RADIUS_API_KEY"),
+        "openrouter" => Some("OPENROUTER_API_KEY"),
+        "vercel-ai-gateway" => Some("AI_GATEWAY_API_KEY"),
+        "zai" => Some("ZAI_API_KEY"),
+        "zai-coding-cn" => Some("ZAI_CODING_CN_API_KEY"),
+        "mistral" => Some("MISTRAL_API_KEY"),
+        "minimax" => Some("MINIMAX_API_KEY"),
+        "minimax-cn" => Some("MINIMAX_CN_API_KEY"),
+        "moonshotai" | "moonshotai-cn" => Some("MOONSHOT_API_KEY"),
+        "huggingface" => Some("HF_TOKEN"),
+        "fireworks" => Some("FIREWORKS_API_KEY"),
+        "together" => Some("TOGETHER_API_KEY"),
+        "baseten" => Some("BASETEN_API_KEY"),
+        "opencode" | "opencode-go" => Some("OPENCODE_API_KEY"),
+        "kimi-coding" => Some("KIMI_API_KEY"),
+        "meta" => Some("META_API_KEY"),
+        "cloudflare-workers-ai" | "cloudflare-ai-gateway" => Some("CLOUDFLARE_API_KEY"),
+        "xiaomi" => Some("XIAOMI_API_KEY"),
+        "xiaomi-token-plan-cn" => Some("XIAOMI_TOKEN_PLAN_CN_API_KEY"),
+        "xiaomi-token-plan-ams" => Some("XIAOMI_TOKEN_PLAN_AMS_API_KEY"),
+        "xiaomi-token-plan-sgp" => Some("XIAOMI_TOKEN_PLAN_SGP_API_KEY"),
+        _ => None,
+    }
 }
 
 impl ManagedSecretValue {
@@ -151,6 +200,11 @@ impl ManagedSecretValue {
 
         match self {
             ManagedSecretValue::RawValue { value } => check(name, value),
+            ManagedSecretValue::ProviderApiKey { provider, api_key, .. } => {
+                let env_name = provider_api_key_env_name(provider)
+                    .ok_or_else(|| anyhow::anyhow!("Unsupported provider API key provider"))?;
+                check(env_name, api_key)
+            }
             ManagedSecretValue::AnthropicApiKey { api_key } => {
                 check(ENV_VAR_ANTHROPIC_API_KEY, api_key)
             }
@@ -203,6 +257,7 @@ impl ManagedSecretValue {
                 ManagedSecretType::AnthropicBedrockApiKey
             }
             ManagedSecretValue::OpenaiApiKey { .. } => ManagedSecretType::OpenaiApiKey,
+            ManagedSecretValue::ProviderApiKey { .. } => ManagedSecretType::ProviderApiKey,
             ManagedSecretValue::DockerRegistry { .. } => ManagedSecretType::DockerRegistry,
             ManagedSecretValue::AwsEcrCredential { .. } => ManagedSecretType::AwsEcrCredential,
         }
@@ -212,6 +267,9 @@ impl ManagedSecretValue {
 impl fmt::Debug for ManagedSecretValue {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            ManagedSecretValue::ProviderApiKey { .. } => f
+                .debug_struct("ManagedSecret::ProviderApiKey")
+                .finish_non_exhaustive(),
             ManagedSecretValue::RawValue { .. } => f
                 .debug_struct("ManagedSecret::RawValue")
                 .finish_non_exhaustive(),

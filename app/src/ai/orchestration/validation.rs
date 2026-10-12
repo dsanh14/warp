@@ -20,14 +20,14 @@ pub(crate) fn local_harness_setup_is_ready(harness: Harness, is_local: bool) -> 
 }
 
 /// Whether a harness can be confirmed as the run-wide harness: excludes
-/// Gemini (not yet supported for multi-agent runs), product-disabled
+/// Gemini and Pi (not supported for multi-agent runs), product-disabled
 /// local harnesses, and local harnesses whose CLI setup is not ready.
 /// Both frontends must filter/disable identically through this predicate.
 // Only the TUI consumes this predicate directly (via `tui_export`); the
 // GUI filters through the harness snapshot builder, which mirrors it.
 #[cfg_attr(not(feature = "tui"), allow(dead_code))]
 pub fn harness_is_selectable(harness: Harness, is_local: bool) -> bool {
-    if harness == Harness::Gemini {
+    if matches!(harness, Harness::Gemini | Harness::Pi) {
         return false;
     }
     if is_local && !local_harness_is_product_enabled(harness) {
@@ -81,6 +81,13 @@ pub fn accept_disabled_reason_with_auth(
     state: &OrchestrationConfigState,
     ctx: &AppContext,
 ) -> Option<String> {
+    if Harness::parse_orchestration_harness(&state.harness_type) == Some(Harness::Pi) {
+        return Some(
+            "The pi harness is not available for orchestrated child agents yet; \
+             it can only be used for Factory-created runs."
+                .to_string(),
+        );
+    }
     if let Some(reason) = state.accept_disabled_reason() {
         return Some(reason.to_string());
     }

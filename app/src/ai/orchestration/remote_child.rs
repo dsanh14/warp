@@ -273,12 +273,14 @@ pub fn prepare_remote_child_launch(
             Harness::Claude => Some(HarnessAuthSecretsConfig {
                 claude_auth_secret_name: Some(name),
                 codex_auth_secret_name: None,
+                pi_auth_secret_name: None,
             }),
             Harness::Codex => Some(HarnessAuthSecretsConfig {
                 claude_auth_secret_name: None,
                 codex_auth_secret_name: Some(name),
+                pi_auth_secret_name: None,
             }),
-            Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Unknown => None,
+            Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Pi | Harness::Unknown => None,
         });
     let spawn_request = SpawnAgentRequest {
         metadata: request.metadata.clone(),

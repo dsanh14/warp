@@ -72,6 +72,7 @@ use super::gemini::{prepare_gemini_environment_config, publish_skills_for_gemini
 use super::harness_persistence::{
     HarnessPersistence, PersistenceOutcome, save_transcript_and_conversation_data,
 };
+use super::pi::prepare_pi_environment_config;
 use super::transcript_persistence::{
     UploadedTranscriptUsage, capture_transcript_with_retry, upload_captured_transcript,
 };
@@ -135,8 +136,21 @@ impl AcpHarness {
         skill_dirs: &[PathBuf],
         has_deferred_repositories: bool,
         resolved_secrets: &HashMap<String, ManagedSecretValue>,
+        resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
         third_party_harness_model_config: Option<&HarnessModelConfig>,
-    ) -> Result<()> {
+    ) -> Result<Vec<(String, String)>> {
+        if self.harness == Harness::Pi {
+            return prepare_pi_environment_config(
+                workspace_root,
+                harness_working_dir,
+                system_prompt,
+                resolved_env_vars,
+                resolved_mcp_servers,
+                resolved_secrets,
+                third_party_harness_model_config,
+                skill_dirs,
+            );
+        }
         match self.harness {
             Harness::Claude => prepare_claude_environment_config(
                 workspace_root,
@@ -172,8 +186,9 @@ impl AcpHarness {
                     has_deferred_repositories,
                 )
             }
-            Harness::Oz | Harness::OpenCode | Harness::Unknown => Ok(()),
-        }
+            Harness::Pi | Harness::Oz | Harness::OpenCode | Harness::Unknown => Ok(()),
+        }?;
+        Ok(Vec::new())
     }
 }
 
@@ -189,7 +204,7 @@ impl ThirdPartyHarness for AcpHarness {
             Harness::Claude => CLIAgent::Claude,
             Harness::Codex => CLIAgent::Codex,
             Harness::Gemini => CLIAgent::Gemini,
-            Harness::Oz | Harness::OpenCode | Harness::Unknown => CLIAgent::Unknown,
+            Harness::Pi | Harness::Oz | Harness::OpenCode | Harness::Unknown => CLIAgent::Unknown,
         }
     }
 
@@ -237,7 +252,7 @@ impl ThirdPartyHarness for AcpHarness {
         resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
         third_party_harness_model_config: Option<&HarnessModelConfig>,
     ) -> Result<Box<dyn HarnessRunner>, AgentDriverError> {
-        self.prepare_harness_environment(
+        let env = self.prepare_harness_environment(
             system_prompt,
             workspace_root,
             harness_working_dir,
@@ -245,19 +260,22 @@ impl ThirdPartyHarness for AcpHarness {
             skill_dirs,
             has_deferred_repositories,
             resolved_secrets,
+            resolved_mcp_servers,
             third_party_harness_model_config,
         )
         .map_err(|error| AgentDriverError::HarnessConfigSetupFailed {
             harness: self.harness.to_string(),
             error,
         })?;
+        let mut launch = self.launch.clone();
+        launch.env.extend(env);
 
         // ACP has no system-prompt channel of its own, so every server-composed block that the
         // harness bootstrap did not already place is folded into the user turn ahead of the
         // prompt itself.
         let system_prompt_in_turn = match self.harness {
             Harness::Claude | Harness::Oz | Harness::OpenCode | Harness::Unknown => system_prompt,
-            Harness::Codex | Harness::Gemini => None,
+            Harness::Codex | Harness::Gemini | Harness::Pi => None,
         };
         let prompt_text = [
             resumption_prompt,
@@ -284,7 +302,7 @@ impl ThirdPartyHarness for AcpHarness {
         let (save_request_tx, save_request_rx) = async_channel::unbounded();
         Ok(Box::new(AcpHarnessRunner {
             harness: self.harness,
-            launch: self.launch.clone(),
+            launch,
             user_prompt: prompt.to_owned(),
             prompt_text,
             harness_working_dir: harness_working_dir.to_path_buf(),
@@ -401,7 +419,15 @@ impl AcpHarnessRunner {
             );
             return;
         };
-        let root = match kind.root() {
+        let root = match self
+            .launch
+            .env
+            .iter()
+            .find(|(name, _)| name == "PI_CODING_AGENT_DIR")
+            .filter(|_| kind == CliTranscriptKind::Pi)
+            .map(|(_, value)| Ok(PathBuf::from(value)))
+            .unwrap_or_else(|| kind.root())
+        {
             Ok(root) => root,
             Err(error) => {
                 log::warn!("Cannot locate {kind:?} transcripts: {error:#}");

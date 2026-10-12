@@ -33,7 +33,7 @@ use warp_core::features::FeatureFlag;
 use warp_core::{safe_debug, safe_error, safe_info, safe_warn};
 use warp_errors::{ErrorExt, ReportErrorLogMode, register_error, report_error, report_if_error};
 use warp_graphql::ai::{AgentTaskState, PlatformErrorCode};
-use warp_managed_secrets::ManagedSecretValue;
+use warp_managed_secrets::{ManagedSecretValue, provider_api_key_env_name};
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::r#async::executor::Background;
 use warpui::r#async::{FutureExt, TimeoutError, Timer};
@@ -5074,6 +5074,11 @@ fn typed_secret_env_names(secrets: &HashMap<String, ManagedSecretValue>) -> Hash
 fn typed_secret_entries(secret: &ManagedSecretValue) -> Vec<(&'static str, &str)> {
     match secret {
         ManagedSecretValue::RawValue { .. } => vec![],
+        ManagedSecretValue::ProviderApiKey { provider, api_key, .. } => {
+            provider_api_key_env_name(provider)
+                .map(|name| vec![(name, api_key.as_str())])
+                .unwrap_or_default()
+        }
         ManagedSecretValue::AnthropicApiKey { api_key } => {
             vec![("ANTHROPIC_API_KEY", api_key.as_str())]
         }

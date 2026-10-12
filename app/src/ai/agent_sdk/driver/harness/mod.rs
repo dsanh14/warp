@@ -47,6 +47,7 @@ pub(crate) mod exit_escalation;
 mod gemini;
 mod harness_persistence;
 mod json_utils;
+mod pi;
 pub(crate) mod process_control;
 mod save_coordinator;
 mod skill_dirs_publish;
@@ -280,7 +281,7 @@ impl fmt::Debug for HarnessKind {
 /// a CLI agent block in the terminal.
 pub(crate) fn renders_natively(harness: Harness, transport: HarnessTransport) -> bool {
     match (harness, transport) {
-        (Harness::Oz, _) => true,
+        (Harness::Oz | Harness::Pi, _) => true,
         (
             Harness::Claude
             | Harness::Codex
@@ -319,6 +320,11 @@ pub(crate) fn harness_kind(
             Harness::Codex => Ok(HarnessKind::ThirdParty(Box::new(CodexHarness))),
             Harness::OpenCode => Ok(HarnessKind::Unsupported(Harness::OpenCode)),
             Harness::Gemini => Ok(HarnessKind::ThirdParty(Box::new(GeminiHarness))),
+            Harness::Pi => Err(AgentDriverError::HarnessSetupFailed {
+                harness: "pi".to_owned(),
+                reason: "The pi harness only runs over ACP; set WARP_HARNESS_TRANSPORT=acp."
+                    .to_owned(),
+            }),
             Harness::Unknown => Err(AgentDriverError::InvalidRuntimeState),
         },
         HarnessTransport::Acp => acp_harness_kind(harness),
@@ -547,7 +553,12 @@ pub(crate) fn harness_model_env_vars(
         Harness::Claude => {
             env_vars.insert(OsString::from("ANTHROPIC_MODEL"), OsString::from(model_id));
         }
-        Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Codex | Harness::Unknown => {}
+        Harness::Oz
+        | Harness::OpenCode
+        | Harness::Gemini
+        | Harness::Pi
+        | Harness::Codex
+        | Harness::Unknown => {}
     }
 
     env_vars

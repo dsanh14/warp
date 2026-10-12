@@ -1,0 +1,212 @@
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::{PermissionsExt as _, symlink};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context as _, Result, anyhow};
+use serde_json::{Map, Value, json};
+use warp_managed_secrets::{ManagedSecretValue, provider_api_key_env_name};
+
+use super::JSONMCPServer;
+use super::json_utils::{read_json_file_or_default, write_json_file};
+use crate::ai::ambient_agents::task::HarnessModelConfig;
+use crate::ai::mcp::JSONTransportType;
+
+const PI_PACKAGE_DIR: &str = "/mnt/pi-cli-sidecar/usr/local/lib/pi-packages";
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_pi_environment_config(
+    workspace_root: &Path,
+    harness_working_dir: &Path,
+    system_prompt: Option<&str>,
+    resolved_env_vars: &HashMap<OsString, OsString>,
+    resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
+    resolved_secrets: &HashMap<String, ManagedSecretValue>,
+    third_party_harness_model_config: Option<&HarnessModelConfig>,
+    skill_dirs: &[PathBuf],
+) -> Result<Vec<(String, String)>> {
+    let agent_dir = tempfile::Builder::new()
+        .prefix("oz-pi-")
+        .tempdir()?
+        .keep();
+    let session_dir = agent_dir.join("sessions");
+    fs::create_dir_all(&session_dir)?;
+    // Pi installs extensions under its agent directory even when its installation assets are
+    // read-only. Seed the writable npm tree so loading the pinned adapter never needs a download.
+    copy_writable_tree(&Path::new(PI_PACKAGE_DIR).join("npm"), &agent_dir.join("npm"))
+        .context("Failed to seed Pi adapter packages")?;
+    prepare_pi_settings(
+        &agent_dir.join("settings.json"),
+        workspace_root,
+        harness_working_dir,
+        skill_dirs,
+        third_party_harness_model_config,
+    )?;
+    if let Some(prompt) = system_prompt {
+        prepare_pi_system_prompt(&agent_dir, harness_working_dir, prompt)?;
+    }
+    write_json_file(
+        &agent_dir.join("mcp.json"),
+        &pi_mcp_config(resolved_mcp_servers),
+        "Failed to serialize Pi MCP configuration",
+    )?;
+    let mut providers = Map::new();
+    for secret in resolved_secrets.values() {
+        let ManagedSecretValue::ProviderApiKey {
+            provider,
+            api_key,
+            base_url: Some(base_url),
+        } = secret else {
+            continue;
+        };
+        let env_name = provider_api_key_env_name(provider)
+            .ok_or_else(|| anyhow!("Unsupported Pi API key provider"))?;
+        let active_key = std::env::var(env_name)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                resolved_env_vars
+                    .get(OsStr::new(env_name))
+                    .and_then(|value| value.to_str())
+                    .map(str::to_owned)
+            });
+        if active_key.as_deref() != Some(api_key.as_str()) {
+            continue;
+        }
+        providers.insert(provider.clone(), json!({"baseUrl": base_url}));
+    }
+    if !providers.is_empty() {
+        write_json_file(
+            &agent_dir.join("models.json"),
+            &json!({"providers": providers}),
+            "Failed to serialize Pi model endpoint overrides",
+        )?;
+    }
+    Ok(vec![
+        ("PI_CODING_AGENT_DIR".to_owned(), agent_dir.display().to_string()),
+        (
+            "PI_CODING_AGENT_SESSION_DIR".to_owned(),
+            session_dir.display().to_string(),
+        ),
+        ("PI_PACKAGE_DIR".to_owned(), PI_PACKAGE_DIR.to_owned()),
+        ("PI_OFFLINE".to_owned(), "1".to_owned()),
+        ("PI_SKIP_VERSION_CHECK".to_owned(), "1".to_owned()),
+    ])
+}
+
+fn prepare_pi_settings(
+    settings_path: &Path,
+    workspace_root: &Path,
+    cwd: &Path,
+    skill_dirs: &[PathBuf],
+    model_config: Option<&HarnessModelConfig>,
+) -> Result<()> {
+    let mut settings: Map<String, Value> = read_json_file_or_default(settings_path)?;
+    settings.insert("defaultProjectTrust".to_owned(), json!("always"));
+    settings.insert("quietStartup".to_owned(), json!(true));
+    settings.insert("enableSkillCommands".to_owned(), json!(true));
+    append_settings_entry(&mut settings, "packages", "npm:pi-mcp-adapter")?;
+    append_settings_entry(&mut settings, "extensions", "-builtin:mcp")?;
+    if let Some(config) = model_config {
+        if config.model_id != "default" {
+            let (provider, model) = config
+                .model_id
+                .split_once('/')
+                .filter(|(provider, model)| !provider.is_empty() && !model.is_empty())
+                .ok_or_else(|| anyhow!("Pi model must be specified as provider/model"))?;
+            settings.insert("defaultProvider".to_owned(), json!(provider));
+            settings.insert("defaultModel".to_owned(), json!(model));
+        }
+        if let Some(level) = &config.reasoning_level {
+            settings.insert("defaultThinkingLevel".to_owned(), json!(level));
+        }
+    }
+    for source in skill_dirs {
+        let source = if source.is_absolute() {
+            source.clone()
+        } else {
+            workspace_root.join(source)
+        };
+        let discovered_upwards = cwd
+            .ancestors()
+            .any(|ancestor| source == ancestor.join(".agents/skills"));
+        if !discovered_upwards {
+            append_settings_entry(&mut settings, "skills", &source.display().to_string())?;
+        }
+    }
+    write_json_file(settings_path, &settings, "Failed to serialize Pi settings")
+}
+
+fn append_settings_entry(settings: &mut Map<String, Value>, key: &str, entry: &str) -> Result<()> {
+    let entries = settings.entry(key.to_owned()).or_insert_with(|| json!([]));
+    let entries = entries
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("Pi settings {key} must be an array"))?;
+    let value = json!(entry);
+    if !entries.contains(&value) {
+        entries.push(value);
+    }
+    Ok(())
+}
+
+fn prepare_pi_system_prompt(agent_dir: &Path, cwd: &Path, prompt: &str) -> Result<()> {
+    // Project system prompts shadow the agent-level append slot, but AGENTS.md is concatenated.
+    let slot = if cwd.join(".pi/APPEND_SYSTEM.md").exists() || cwd.join(".pi/SYSTEM.md").exists() {
+        "AGENTS.md"
+    } else {
+        "APPEND_SYSTEM.md"
+    };
+    log::info!("Pi system prompt slot={slot}");
+    fs::write(agent_dir.join(slot), prompt).context("Failed to write Pi system prompt")
+}
+
+fn pi_mcp_config(servers: &HashMap<String, JSONMCPServer>) -> Value {
+    let servers: Map<String, Value> = servers
+        .iter()
+        .map(|(name, server)| {
+            let config = match &server.transport_type {
+                JSONTransportType::CLIServer { command, args, env, .. } => {
+                    json!({"command": command, "args": args, "env": env})
+                }
+                JSONTransportType::SSEServer { url, headers } => {
+                    json!({"url": url, "headers": headers})
+                }
+            };
+            (name.clone(), config)
+        })
+        .collect();
+    json!({"mcpServers": servers})
+}
+
+fn copy_writable_tree(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        #[cfg(unix)]
+        if entry.file_type()?.is_symlink() {
+            symlink(fs::read_link(entry.path())?, &target)?;
+            continue;
+        }
+        if entry.path().is_dir() {
+            copy_writable_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+            #[cfg(unix)]
+            {
+                let permissions = fs::metadata(&target)?.permissions();
+                fs::set_permissions(
+                    &target,
+                    fs::Permissions::from_mode(permissions.mode() | 0o200),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "pi_tests.rs"]
+mod tests;

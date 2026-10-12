@@ -11,6 +11,22 @@ impl Entity for CtxProbe {
     type Event = ();
 }
 
+#[test]
+fn pi_orchestration_is_rejected_in_local_and_cloud_modes() {
+    with_app_ctx(|ctx| {
+        for mode in [RunAgentsExecutionMode::Local, cloud()] {
+            let state = state("pi", mode, AuthSecretSelection::Unset);
+            assert_eq!(
+                accept_disabled_reason_with_auth(&state, ctx).as_deref(),
+                Some(
+                    "The pi harness is not available for orchestrated child agents yet; \
+                     it can only be used for Factory-created runs."
+                ),
+            );
+        }
+    });
+}
+
 /// Runs `f` with a plain `AppContext` (no singletons registered).
 fn with_app_ctx(f: impl FnOnce(&AppContext) + 'static) {
     App::test((), |mut app| async move {
