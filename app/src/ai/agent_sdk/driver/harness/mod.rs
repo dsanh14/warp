@@ -311,23 +311,26 @@ pub(crate) fn harness_kind(
     harness: Harness,
     transport: HarnessTransport,
 ) -> Result<HarnessKind, AgentDriverError> {
-    // The transport only selects how a third-party harness is driven; Oz is Warp's own loop.
-    if harness == Harness::Oz {
-        return Ok(HarnessKind::Oz);
+    // The transport only selects how a third-party harness is driven; Oz is Warp's own loop
+    // and Pi has no interactive CLI mode, so neither consults it.
+    match harness {
+        Harness::Oz => return Ok(HarnessKind::Oz),
+        Harness::Pi => return acp_harness_kind(harness),
+        Harness::Claude
+        | Harness::Codex
+        | Harness::OpenCode
+        | Harness::Gemini
+        | Harness::Unknown => {}
     }
     match transport {
         HarnessTransport::Pty => match harness {
-            Harness::Oz => Ok(HarnessKind::Oz),
             Harness::Claude => Ok(HarnessKind::ThirdParty(Box::new(ClaudeHarness))),
             Harness::Codex => Ok(HarnessKind::ThirdParty(Box::new(CodexHarness))),
             Harness::OpenCode => Ok(HarnessKind::Unsupported(Harness::OpenCode)),
             Harness::Gemini => Ok(HarnessKind::ThirdParty(Box::new(GeminiHarness))),
-            Harness::Pi => Err(AgentDriverError::HarnessSetupFailed {
-                harness: "pi".to_owned(),
-                reason: "The pi harness only runs over ACP; set WARP_HARNESS_TRANSPORT=acp."
-                    .to_owned(),
-            }),
-            Harness::Unknown => Err(AgentDriverError::InvalidRuntimeState),
+            Harness::Oz | Harness::Pi | Harness::Unknown => {
+                Err(AgentDriverError::InvalidRuntimeState)
+            }
         },
         HarnessTransport::Acp => acp_harness_kind(harness),
     }

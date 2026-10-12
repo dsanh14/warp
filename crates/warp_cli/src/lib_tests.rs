@@ -3356,7 +3356,10 @@ fn agent_run_cloud_defaults_harness_to_oz() {
 
 #[test]
 fn harness_parse_orchestration_harness_accepts_aliases() {
-    assert_eq!(Harness::parse_orchestration_harness("pi"), Some(Harness::Pi));
+    assert_eq!(
+        Harness::parse_orchestration_harness("pi"),
+        Some(Harness::Pi)
+    );
     assert_eq!(
         Harness::parse_orchestration_harness("claude-code"),
         Some(Harness::Claude)

@@ -15,8 +15,8 @@ use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use futures::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use futures::lock::Mutex as AsyncMutex;
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use warpui::r#async::executor::{Background, BackgroundTask};
 
@@ -232,10 +232,12 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 };
                 let error = message.get("error").filter(|error| !error.is_null());
                 let result = match (message.get("result"), error) {
-                    (_, Some(error)) => Err(match serde_json::from_value::<RpcError>(error.clone()) {
-                        Ok(error) => anyhow!(error),
-                        Err(_) => anyhow!("Malformed ACP error response"),
-                    }),
+                    (_, Some(error)) => {
+                        Err(match serde_json::from_value::<RpcError>(error.clone()) {
+                            Ok(error) => anyhow!(error),
+                            Err(_) => anyhow!("Malformed ACP error response"),
+                        })
+                    }
                     (Some(result), None) => Ok(result.clone()),
                     (None, None) => Ok(Value::Null),
                 };

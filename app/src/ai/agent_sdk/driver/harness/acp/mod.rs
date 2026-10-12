@@ -40,7 +40,7 @@ use parking_lot::Mutex;
 use prost::Message as _;
 use serde_json::Value;
 use uuid::Uuid;
-use warp_cli::agent::{Harness, HarnessTransport};
+use warp_cli::agent::Harness;
 use warp_core::channel::ChannelState;
 use warp_core::safe_warn;
 use warp_errors::report_error;
@@ -68,9 +68,9 @@ use self::protocol::{
 };
 use super::super::terminal::{CommandHandle, TerminalDriver};
 use super::super::{AgentDriver, AgentDriverError};
-use super::claude_code::prepare_claude_environment_config;
-use super::codex::{prepare_codex_environment_config, publish_skills_for_codex};
-use super::gemini::{prepare_gemini_environment_config, publish_skills_for_gemini};
+use super::claude_code::{ClaudeHarness, prepare_claude_environment_config};
+use super::codex::{CodexHarness, prepare_codex_environment_config, publish_skills_for_codex};
+use super::gemini::{GeminiHarness, prepare_gemini_environment_config, publish_skills_for_gemini};
 use super::harness_persistence::{
     HarnessPersistence, PersistenceOutcome, save_transcript_and_conversation_data,
 };
@@ -79,8 +79,8 @@ use super::transcript_persistence::{
     UploadedTranscriptUsage, capture_transcript_with_retry, upload_captured_transcript,
 };
 use super::{
-    HarnessCleanupDisposition, HarnessKind, HarnessRunner, JSONMCPServer, ResumePayload, SavePoint,
-    ThirdPartyHarness, harness_kind, validate_cli_installed,
+    HarnessCleanupDisposition, HarnessRunner, JSONMCPServer, ResumePayload, SavePoint,
+    ThirdPartyHarness, validate_cli_installed,
 };
 use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
@@ -118,11 +118,13 @@ impl AcpHarness {
     }
 
     /// The terminal-based harness with the same identity, whose per-harness knowledge (install
-    /// docs, auth checks) applies regardless of transport.
+    /// docs, auth checks) applies regardless of transport. Pi has no terminal-based harness.
     fn pty_harness(&self) -> Option<Box<dyn ThirdPartyHarness>> {
-        match harness_kind(self.harness, HarnessTransport::Pty) {
-            Ok(HarnessKind::ThirdParty(harness)) => Some(harness),
-            Ok(HarnessKind::Oz | HarnessKind::Unsupported(_)) | Err(_) => None,
+        match self.harness {
+            Harness::Claude => Some(Box::new(ClaudeHarness)),
+            Harness::Codex => Some(Box::new(CodexHarness)),
+            Harness::Gemini => Some(Box::new(GeminiHarness)),
+            Harness::Pi | Harness::Oz | Harness::OpenCode | Harness::Unknown => None,
         }
     }
 

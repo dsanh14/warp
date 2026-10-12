@@ -280,7 +280,9 @@ pub fn prepare_remote_child_launch(
                 codex_auth_secret_name: Some(name),
                 pi_auth_secret_name: None,
             }),
-            Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Pi | Harness::Unknown => None,
+            Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Pi | Harness::Unknown => {
+                None
+            }
         });
     let spawn_request = SpawnAgentRequest {
         metadata: request.metadata.clone(),

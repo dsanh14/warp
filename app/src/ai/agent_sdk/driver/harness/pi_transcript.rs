@@ -62,9 +62,9 @@ fn session_header(path: &Path, cwd: &Path) -> Option<Uuid> {
         .ok()?;
     let header = serde_json::from_str::<Value>(&header).ok()?;
     if header["type"] != "session"
-        || !header["cwd"]
+        || header["cwd"]
             .as_str()
-            .is_some_and(|path| Path::new(path) == cwd)
+            .is_none_or(|path| Path::new(path) != cwd)
     {
         return None;
     }

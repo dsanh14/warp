@@ -73,7 +73,9 @@ pub fn icon_fill_on_circle(harness: Harness, theme: &WarpTheme) -> WarpThemeFill
         Harness::Claude | Harness::Codex | Harness::Gemini | Harness::OpenCode => {
             WarpThemeFill::Solid(ColorU::white())
         }
-        Harness::Pi | Harness::Unknown => theme.main_text_color(internal_colors::fg_overlay_2(theme)),
+        Harness::Pi | Harness::Unknown => {
+            theme.main_text_color(internal_colors::fg_overlay_2(theme))
+        }
     }
 }
 
