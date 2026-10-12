@@ -583,7 +583,11 @@ impl HarnessRunner for AcpHarnessRunner {
             .await
             .map_err(|_| AgentDriverError::InvalidRuntimeState)?;
 
-        let listener = BridgeListener::bind(&self.launch.program, &self.launch.args)
+        let listener = BridgeListener::bind(
+            &self.launch.program,
+            &self.launch.args,
+            &self.launch.env,
+        )
             .map_err(|error| self.setup_failed(format!("{error:#}")))?;
         let command = bridge_command(listener.launch_file(), shell_family)
             .map_err(|error| self.setup_failed(format!("{error:#}")))?;
@@ -691,6 +695,15 @@ impl HarnessRunner for AcpHarnessRunner {
             Err(error) => {
                 connection.close().await;
                 self.interrupt_terminal(foreground).await;
+                if error
+                    .downcast_ref::<RpcError>()
+                    .is_some_and(|error| error.code == -32000)
+                {
+                    return Err(AgentDriverError::HarnessAuthCheckFailed {
+                        harness: self.harness.to_string(),
+                        detail: "ACP authentication required".to_owned(),
+                    });
+                }
                 return Err(self.setup_failed(format!("{error:#}")));
             }
         };

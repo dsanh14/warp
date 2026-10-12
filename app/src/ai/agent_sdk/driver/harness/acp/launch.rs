@@ -5,6 +5,7 @@ use warp_cli::agent::Harness;
 pub(crate) struct AcpLaunchSpec {
     pub program: String,
     pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
 }
 
 impl AcpLaunchSpec {
@@ -20,6 +21,7 @@ impl AcpLaunchSpec {
         Some(Self {
             program: program.to_owned(),
             args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            env: Vec::new(),
         })
     }
 }
