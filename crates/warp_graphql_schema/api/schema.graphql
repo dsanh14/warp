@@ -2489,12 +2489,6 @@ type ManagedSecretOpenAiApiKeyValue {
   baseUrl: String
 }
 
-type ManagedSecretProviderApiKeyValue {
-  provider: String!
-  apiKey: String!
-  baseUrl: String
-}
-
 """A raw, unencrypted managed secret value."""
 type ManagedSecretRawValue {
   value: String!
@@ -2514,11 +2508,10 @@ enum ManagedSecretType {
   DOCKER_REGISTRY
   DOTENVX
   OPENAI_API_KEY
-  PROVIDER_API_KEY
   RAW_VALUE
 }
 
-union ManagedSecretValue = ManagedSecretAnthropicApiKeyValue | ManagedSecretAnthropicBedrockAccessKeyValue | ManagedSecretAnthropicBedrockApiKeyValue | ManagedSecretAwsEcrCredentialValue | ManagedSecretDockerRegistryValue | ManagedSecretOpenAiApiKeyValue | ManagedSecretProviderApiKeyValue | ManagedSecretRawValue
+union ManagedSecretValue = ManagedSecretAnthropicApiKeyValue | ManagedSecretAnthropicBedrockAccessKeyValue | ManagedSecretAnthropicBedrockApiKeyValue | ManagedSecretAwsEcrCredentialValue | ManagedSecretDockerRegistryValue | ManagedSecretOpenAiApiKeyValue | ManagedSecretRawValue
 
 input ManagedSecretsInput {
   """Pagination cursor, currently unused."""

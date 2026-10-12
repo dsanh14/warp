@@ -40,7 +40,6 @@ use super::{
     debug_turn_task_state, harness_idle_action_for_conversation_status,
     idle_window_for_cli_session_status, idle_window_for_terminal_status,
     inject_deferred_repos_instruction, setup_failure_status_update, terminal_status_log_outcome,
-    typed_secret_entries,
 };
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::agent::task::TaskId;
@@ -98,19 +97,6 @@ fn setup_timeout_does_not_retain_a_potentially_running_command() {
             Some(PlatformErrorCode::EnvironmentSetupFailed)
         );
     });
-}
-
-#[test]
-fn provider_api_key_emits_native_provider_environment_without_endpoint_fields() {
-    let secret = ManagedSecretValue::ProviderApiKey {
-        provider: "google".to_owned(),
-        api_key: "test-only-value".to_owned(),
-        base_url: Some("https://example.test/api".to_owned()),
-    };
-    assert_eq!(
-        typed_secret_entries(&secret),
-        vec![("GEMINI_API_KEY", "test-only-value")]
-    );
 }
 
 #[test]

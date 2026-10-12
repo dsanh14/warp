@@ -4,17 +4,17 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
+use warp_cli::agent::Harness;
 
+use super::super::harness_env_vars;
 use super::{
-    PI_CODING_AGENT_DIR_ENV, pi_env_vars, pi_mcp_config, prepare_pi_settings,
-    prepare_pi_system_prompt,
+    PI_CODING_AGENT_DIR_ENV, pi_mcp_config, prepare_pi_settings, prepare_pi_system_prompt,
 };
-use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::ai::mcp::JSONMCPServer;
 #[test]
 fn environment_allocates_isolated_session_directories() {
-    let first = pi_env_vars().unwrap();
-    let second = pi_env_vars().unwrap();
+    let first = harness_env_vars(Harness::Pi, None).unwrap();
+    let second = harness_env_vars(Harness::Pi, None).unwrap();
     let first_agent_dir = PathBuf::from(&first[OsStr::new(PI_CODING_AGENT_DIR_ENV)]);
     let second_agent_dir = PathBuf::from(&second[OsStr::new(PI_CODING_AGENT_DIR_ENV)]);
     let first_session_dir = PathBuf::from(&first[OsStr::new("PI_CODING_AGENT_SESSION_DIR")]);
@@ -45,23 +45,12 @@ fn settings_preserve_existing_values_and_add_only_external_skills() {
         .to_string(),
     )
     .unwrap();
-    let config = HarnessModelConfig {
-        model_id: "openrouter/vendor/model".to_owned(),
-        reasoning_level: Some("high".to_owned()),
-    };
     let skill_dirs = vec![
         dir.path().join(".agents/skills"),
         dir.path().join("factory/skills"),
     ];
     for _ in 0..2 {
-        prepare_pi_settings(
-            &settings_path,
-            dir.path(),
-            dir.path(),
-            &skill_dirs,
-            Some(&config),
-        )
-        .unwrap();
+        prepare_pi_settings(&settings_path, dir.path(), dir.path(), &skill_dirs).unwrap();
     }
 
     let settings: Value = serde_json::from_slice(&fs::read(settings_path).unwrap()).unwrap();
@@ -75,9 +64,6 @@ fn settings_preserve_existing_values_and_add_only_external_skills() {
         settings["skills"],
         json!(["existing", dir.path().join("factory/skills")])
     );
-    assert_eq!(settings["defaultProvider"], "openrouter");
-    assert_eq!(settings["defaultModel"], "vendor/model");
-    assert_eq!(settings["defaultThinkingLevel"], "high");
     assert_eq!(settings["defaultProjectTrust"], "always");
 }
 

@@ -7,18 +7,19 @@
 //! One gap: when claude-agent-acp restarts a session to clear its context after a plan is
 //! approved, the SDK continues under a fresh id that the adapter never reports. Captures keep
 //! reading the transcript under the ACP session id, which stops at the restart.
-use std::fs::{self, File};
-use std::io::{BufRead as _, BufReader, Read as _};
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
-use serde_json::Value;
 use uuid::Uuid;
-use walkdir::WalkDir;
 use warp_cli::agent::Harness;
 
 use super::super::claude_transcript::{claude_config_dir, session_transcript_path};
 use super::super::codex_transcript::{codex_sessions_root, find_session_file};
+use super::super::pi::PI_CODING_AGENT_DIR_ENV;
+use super::super::pi_transcript::find_session_file as find_pi_session_file;
 use super::super::transcript_persistence::{CapturedTranscript, UploadedTranscriptUsage};
 use super::super::usage_reporting::CaptureIdentity;
 use super::super::{claude_code, codex};
@@ -57,11 +58,12 @@ impl CliTranscriptKind {
 
     /// The directory the CLI keeps its transcripts under, from the same environment the adapter
     /// inherits.
-    pub(super) fn root(self) -> Result<PathBuf> {
+    pub(super) fn root(self, env_vars: &HashMap<OsString, OsString>) -> Result<PathBuf> {
         match self {
             Self::Codex => codex_sessions_root(),
             Self::Claude => claude_config_dir(),
-            Self::Pi => std::env::var_os("PI_CODING_AGENT_DIR")
+            Self::Pi => env_vars
+                .get(OsStr::new(PI_CODING_AGENT_DIR_ENV))
                 .map(PathBuf::from)
                 .ok_or_else(|| anyhow!("PI_CODING_AGENT_DIR is not configured")),
         }
@@ -74,7 +76,7 @@ impl CliTranscriptKind {
             Self::Claude => {
                 Some(session_transcript_path(root, cwd, session_id)).filter(|path| path.exists())
             }
-            Self::Pi => locate_pi_transcript(root, cwd, session_id),
+            Self::Pi => find_pi_session_file(root, cwd, session_id),
         }
     }
 
@@ -117,59 +119,6 @@ impl CliTranscriptKind {
         }
         UploadedTranscriptUsage::empty()
     }
-}
-
-fn locate_pi_transcript(root: &Path, cwd: &Path, session_id: Uuid) -> Option<PathBuf> {
-    let session_dir = root.join("sessions");
-    let map = dirs::home_dir()
-        .map(|home| home.join(".pi/pi-acp/session-map.json"))
-        .and_then(|path| fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-    if let Some(map) = map.filter(|map| map["version"] == 1)
-        && let Some(entry) = map["sessions"].get(session_id.to_string())
-        && let Some(path) = entry["sessionFile"].as_str().map(PathBuf::from)
-        && let Ok(path) = path.canonicalize()
-        && let Ok(session_dir) = session_dir.canonicalize()
-        && path.starts_with(session_dir)
-        && pi_transcript_header(&path, cwd).is_some()
-    {
-        return Some(path);
-    }
-    // pi-acp keeps its map under HOME even when Pi's session directory is overridden.
-    // Restrict fallback discovery to this run's scratch tree, never the user's global sessions.
-    let suffix = format!("_{session_id}.jsonl");
-    WalkDir::new(&session_dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-        .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "jsonl"))
-        .filter_map(|entry| pi_transcript_header(entry.path(), cwd).map(|id| (entry, id)))
-        .max_by_key(|(entry, id)| {
-            (
-                *id == session_id,
-                entry.file_name().to_string_lossy().ends_with(&suffix),
-                entry.metadata().ok().and_then(|metadata| metadata.modified().ok()),
-            )
-        })
-        .map(|(entry, _)| entry.into_path())
-}
-
-fn pi_transcript_header(path: &Path, cwd: &Path) -> Option<Uuid> {
-    let file = File::open(path).ok()?;
-    let mut header = String::new();
-    if BufReader::new(file.take(8 * 1024 * 1024))
-        .read_line(&mut header)
-        .is_err()
-    {
-        return None;
-    }
-    let header = serde_json::from_str::<Value>(&header).ok()?;
-    if header["type"] != "session"
-        || !header["cwd"].as_str().is_some_and(|path| Path::new(path) == cwd)
-    {
-        return None;
-    }
-    header["id"].as_str().and_then(|id| Uuid::parse_str(id).ok())
 }
 
 #[cfg(test)]

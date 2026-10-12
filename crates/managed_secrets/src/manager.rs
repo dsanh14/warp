@@ -53,13 +53,6 @@ pub fn convert_task_secrets(
             GqlManagedSecretValue::ManagedSecretOpenAiApiKeyValue(v) => {
                 ManagedSecretValue::openai_api_key(v.api_key, v.base_url)
             }
-            GqlManagedSecretValue::ManagedSecretProviderApiKeyValue(v) => {
-                ManagedSecretValue::ProviderApiKey {
-                    provider: v.provider,
-                    api_key: v.api_key,
-                    base_url: v.base_url,
-                }
-            }
             GqlManagedSecretValue::Unknown => {
                 return Err(anyhow::anyhow!(
                     "Unknown secret value type for secret: {}",

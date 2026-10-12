@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use tempfile::TempDir;
@@ -7,6 +9,28 @@ use uuid::Uuid;
 
 use super::super::super::claude_transcript::encode_cwd;
 use super::CliTranscriptKind;
+
+#[test]
+fn pi_transcript_root_uses_the_run_environment() {
+    let first = HashMap::from([(
+        OsString::from("PI_CODING_AGENT_DIR"),
+        OsString::from("/tmp/pi-first-run"),
+    )]);
+    let second = HashMap::from([(
+        OsString::from("PI_CODING_AGENT_DIR"),
+        OsString::from("/tmp/pi-second-run"),
+    )]);
+
+    assert_eq!(
+        CliTranscriptKind::Pi.root(&first).unwrap(),
+        PathBuf::from("/tmp/pi-first-run")
+    );
+    assert_eq!(
+        CliTranscriptKind::Pi.root(&second).unwrap(),
+        PathBuf::from("/tmp/pi-second-run")
+    );
+    assert!(CliTranscriptKind::Pi.root(&HashMap::new()).is_err());
+}
 
 fn write(path: &Path) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();

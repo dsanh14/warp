@@ -11,4 +11,4 @@ pub use gcp::{
     GcpWorkloadIdentityFederationToken, PrepareGcpCredentialsError,
 };
 pub use manager::{ActorProvider, ManagedSecretManager, convert_task_secrets};
-pub use secret_value::{ManagedSecretValue, provider_api_key_env_name};
+pub use secret_value::ManagedSecretValue;

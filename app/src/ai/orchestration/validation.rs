@@ -81,6 +81,7 @@ pub fn accept_disabled_reason_with_auth(
     state: &OrchestrationConfigState,
     ctx: &AppContext,
 ) -> Option<String> {
+    // TODO: Support Pi child agents in the orchestration protocol and launch paths.
     if Harness::parse_orchestration_harness(&state.harness_type) == Some(Harness::Pi) {
         return Some(
             "The pi harness is not available for orchestrated child agents yet; \

@@ -21,11 +21,12 @@ mod cli_transcript;
 mod connection;
 mod launch;
 mod mapping;
+mod model_config;
 mod policy;
 mod protocol;
 
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -56,6 +57,7 @@ use self::bridge::{BridgeListener, bridge_command};
 use self::cli_transcript::CliTranscriptKind;
 use self::connection::{AcpConnection, InboundNotification, RpcError};
 use self::mapping::{AcpTurnMapper, TurnEvent};
+use self::model_config::configure_model_and_thinking_through_acp;
 use self::policy::{PolicyDecision, PolicyRequest};
 use self::protocol::{
     CancelParams, ClientCapabilities, ClientInfo, ContentBlock, FsCapabilities, InitializeParams,
@@ -72,7 +74,7 @@ use super::gemini::{prepare_gemini_environment_config, publish_skills_for_gemini
 use super::harness_persistence::{
     HarnessPersistence, PersistenceOutcome, save_transcript_and_conversation_data,
 };
-use super::pi::{PI_CODING_AGENT_DIR_ENV, prepare_pi_environment_config};
+use super::pi::prepare_pi_environment_config;
 use super::transcript_persistence::{
     UploadedTranscriptUsage, capture_transcript_with_retry, upload_captured_transcript,
 };
@@ -295,27 +297,39 @@ impl ThirdPartyHarness for AcpHarness {
             return Err(AgentDriverError::InvalidRuntimeState);
         }
         let (save_request_tx, save_request_rx) = async_channel::unbounded();
+        let cli_session = CliTranscriptKind::for_harness(self.harness).and_then(|kind| match kind
+            .root(resolved_env_vars)
+        {
+            Ok(root) => Some(CliSession {
+                kind,
+                session_id: OnceLock::new(),
+                root,
+                transcript_path: OnceLock::new(),
+            }),
+            Err(error) => {
+                log::warn!("Cannot locate {kind:?} transcripts: {error:#}");
+                None
+            }
+        });
         Ok(Box::new(AcpHarnessRunner {
             harness: self.harness,
             launch: self.launch.clone(),
             user_prompt: prompt.to_owned(),
             prompt_text,
             harness_working_dir: harness_working_dir.to_path_buf(),
+            model_config: third_party_harness_model_config.cloned(),
             task_id,
             client: server_api,
             terminal_driver,
             attachments: Arc::new(attachments),
             mcp_servers: resolved_mcp_servers
                 .iter()
+                .filter(|_| self.harness != Harness::Pi)
                 .map(|(name, server)| mcp_server_for_acp(name, server))
                 .collect(),
             conversation: OnceLock::new(),
             boundary_snapshot: Arc::default(),
-            cli_session: OnceLock::new(),
-            cli_transcript_root: resolved_env_vars
-                .get(OsStr::new(PI_CODING_AGENT_DIR_ENV))
-                .filter(|_| self.harness == Harness::Pi)
-                .map(PathBuf::from),
+            cli_session,
             // Save points are raised at request-stream boundaries, which is the cadence the
             // server persists its own conversations at, so they are uploaded as they come.
             persistence: HarnessPersistence::default().with_save_debounce(Duration::ZERO),
@@ -346,7 +360,7 @@ struct RunConversation {
 struct CliSession {
     kind: CliTranscriptKind,
     /// The CLI's own session id, which names its transcript on disk.
-    session_id: Uuid,
+    session_id: OnceLock<Uuid>,
     /// The directory the CLI keeps its transcripts under.
     root: PathBuf,
     /// Cached once the CLI has written the transcript.
@@ -361,6 +375,7 @@ pub(crate) struct AcpHarnessRunner {
     /// The full text sent to the agent, including server-composed context.
     prompt_text: String,
     harness_working_dir: PathBuf,
+    model_config: Option<HarnessModelConfig>,
     task_id: Option<AmbientAgentTaskId>,
     client: Arc<dyn HarnessSupportClient>,
     terminal_driver: ModelHandle<TerminalDriver>,
@@ -372,9 +387,7 @@ pub(crate) struct AcpHarnessRunner {
     /// yet uploaded. Captured by the turn driver when it finishes a stream, so the upload never
     /// sees a stream that a later turn has since opened.
     boundary_snapshot: Arc<Mutex<Option<Vec<u8>>>>,
-    /// Set after the handshake for harnesses whose CLI transcript is uploaded.
-    cli_session: OnceLock<CliSession>,
-    cli_transcript_root: Option<PathBuf>,
+    cli_session: Option<CliSession>,
     persistence: HarnessPersistence,
     /// Save points raised by the turn driver at request-stream and turn boundaries.
     save_request_tx: async_channel::Sender<SavePoint>,
@@ -409,9 +422,10 @@ impl AcpHarnessRunner {
     }
 
     fn record_cli_session(&self, acp_session_id: &str) {
-        let Some(kind) = CliTranscriptKind::for_harness(self.harness) else {
+        let Some(cli) = &self.cli_session else {
             return;
         };
+        let kind = cli.kind;
         let Some(session_id) = kind.cli_session_id(acp_session_id) else {
             log::warn!(
                 "ACP session id {acp_session_id} does not identify a {kind:?} session, so its \
@@ -419,36 +433,18 @@ impl AcpHarnessRunner {
             );
             return;
         };
-        let root = match self
-            .cli_transcript_root
-            .as_ref()
-            .map(|root| Ok(root.clone()))
-            .unwrap_or_else(|| kind.root())
-        {
-            Ok(root) => root,
-            Err(error) => {
-                log::warn!("Cannot locate {kind:?} transcripts: {error:#}");
-                return;
-            }
-        };
-        let _ = self.cli_session.set(CliSession {
-            kind,
-            session_id,
-            root,
-            transcript_path: OnceLock::new(),
-        });
+        let _ = cli.session_id.set(session_id);
     }
 
-    async fn cli_transcript_path(&self, cli: &CliSession) -> Result<Option<PathBuf>> {
+    async fn cli_transcript_path(
+        &self,
+        cli: &CliSession,
+        session_id: Uuid,
+    ) -> Result<Option<PathBuf>> {
         if let Some(path) = cli.transcript_path.get() {
             return Ok(Some(path.clone()));
         }
-        let (kind, root, cwd, session_id) = (
-            cli.kind,
-            cli.root.clone(),
-            self.harness_working_dir.clone(),
-            cli.session_id,
-        );
+        let (kind, root, cwd) = (cli.kind, cli.root.clone(), self.harness_working_dir.clone());
         let path = tokio::task::spawn_blocking(move || kind.locate(&root, &cwd, session_id))
             .await
             .context("CLI transcript discovery task failed")?;
@@ -465,21 +461,20 @@ impl AcpHarnessRunner {
         server_id: &ServerConversationToken,
         is_final: bool,
     ) -> Result<UploadedTranscriptUsage> {
-        let Some(cli) = self.cli_session.get() else {
+        let Some(cli) = &self.cli_session else {
+            return Ok(UploadedTranscriptUsage::empty());
+        };
+        let Some(&session_id) = cli.session_id.get() else {
             return Ok(UploadedTranscriptUsage::empty());
         };
         let capture =
             capture_transcript_with_retry(self.persistence.is_reporting_enabled(), || async {
-                let Some(path) = self.cli_transcript_path(cli).await? else {
+                let Some(path) = self.cli_transcript_path(cli, session_id).await? else {
                     return Ok(None);
                 };
                 let identity = self.persistence.begin_capture();
-                let (kind, root, cwd, session_id) = (
-                    cli.kind,
-                    cli.root.clone(),
-                    self.harness_working_dir.clone(),
-                    cli.session_id,
-                );
+                let (kind, root, cwd) =
+                    (cli.kind, cli.root.clone(), self.harness_working_dir.clone());
                 tokio::task::spawn_blocking(move || {
                     kind.capture(session_id, &path, &root, &cwd, is_final, identity)
                 })
@@ -688,7 +683,7 @@ impl HarnessRunner for AcpHarnessRunner {
                 initialize.protocol_version,
                 initialize.auth_methods.len(),
             );
-            let session: NewSessionResponse = connection
+            let mut session: NewSessionResponse = connection
                 .request(
                     protocol::METHOD_SESSION_NEW,
                     NewSessionParams {
@@ -698,6 +693,16 @@ impl HarnessRunner for AcpHarnessRunner {
                 )
                 .await
                 .context("session/new failed")?;
+            match self.harness {
+                Harness::Pi => configure_model_and_thinking_through_acp(
+                    &connection,
+                    &mut session,
+                    self.model_config.as_ref(),
+                )
+                .await?,
+                Harness::Claude | Harness::Codex | Harness::Gemini => {}
+                Harness::Oz | Harness::OpenCode | Harness::Unknown => {}
+            }
             Ok::<_, anyhow::Error>(session.session_id)
         }
         .fuse();

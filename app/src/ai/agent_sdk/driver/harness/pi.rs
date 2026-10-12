@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, anyhow};
 use serde_json::{Map, Value, json};
 use tempfile::Builder;
-use warp_managed_secrets::{ManagedSecretValue, provider_api_key_env_name};
+use warp_managed_secrets::ManagedSecretValue;
 
 use super::JSONMCPServer;
 use super::json_utils::{read_json_file_or_default, write_json_file};
@@ -18,7 +18,7 @@ use crate::ai::mcp::JSONTransportType;
 const PI_PACKAGE_DIR: &str = "/mnt/pi-cli-sidecar/usr/local/lib/pi-packages";
 pub(super) const PI_CODING_AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";
 
-pub(in super::super) fn pi_env_vars() -> Result<HashMap<OsString, OsString>> {
+pub(super) fn pi_env_vars() -> Result<HashMap<OsString, OsString>> {
     let agent_dir = Builder::new().prefix("oz-pi-").tempdir()?;
     let session_dir = agent_dir.path().join("sessions");
     fs::create_dir_all(&session_dir)?;
@@ -52,6 +52,19 @@ pub(super) fn prepare_pi_environment_config(
     third_party_harness_model_config: Option<&HarnessModelConfig>,
     skill_dirs: &[PathBuf],
 ) -> Result<()> {
+    if let Some(config) = third_party_harness_model_config
+        && config.model_id != "default"
+        && !config
+            .model_id
+            .split_once('/')
+            .is_some_and(|(provider, model)| {
+                matches!(provider, "anthropic" | "openai") && !model.is_empty()
+            })
+    {
+        return Err(anyhow!(
+            "Pi models must use anthropic/model or openai/model"
+        ));
+    }
     let agent_dir = resolved_env_vars
         .get(OsStr::new(PI_CODING_AGENT_DIR_ENV))
         .map(PathBuf::from)
@@ -68,7 +81,6 @@ pub(super) fn prepare_pi_environment_config(
         workspace_root,
         harness_working_dir,
         skill_dirs,
-        third_party_harness_model_config,
     )?;
     if let Some(prompt) = system_prompt {
         prepare_pi_system_prompt(&agent_dir, harness_working_dir, prompt)?;
@@ -79,17 +91,17 @@ pub(super) fn prepare_pi_environment_config(
         "Failed to serialize Pi MCP configuration",
     )?;
     let mut providers = Map::new();
+
+    // TODO: Generalize Pi authentication beyond the existing Anthropic/OpenAI secret types.
     for secret in resolved_secrets.values() {
-        let ManagedSecretValue::ProviderApiKey {
-            provider,
+        let ManagedSecretValue::OpenaiApiKey {
             api_key,
             base_url: Some(base_url),
         } = secret
         else {
             continue;
         };
-        let env_name = provider_api_key_env_name(provider)
-            .ok_or_else(|| anyhow!("Unsupported Pi API key provider"))?;
+        let env_name = "OPENAI_API_KEY";
         let active_key = std::env::var(env_name)
             .ok()
             .filter(|value| !value.is_empty())
@@ -102,7 +114,7 @@ pub(super) fn prepare_pi_environment_config(
         if active_key.as_deref() != Some(api_key.as_str()) {
             continue;
         }
-        providers.insert(provider.clone(), json!({"baseUrl": base_url}));
+        providers.insert("openai".to_owned(), json!({"baseUrl": base_url}));
     }
     if !providers.is_empty() {
         write_json_file(
@@ -119,7 +131,6 @@ fn prepare_pi_settings(
     workspace_root: &Path,
     cwd: &Path,
     skill_dirs: &[PathBuf],
-    model_config: Option<&HarnessModelConfig>,
 ) -> Result<()> {
     let mut settings: Map<String, Value> = read_json_file_or_default(settings_path)?;
     settings.insert("defaultProjectTrust".to_owned(), json!("always"));
@@ -127,20 +138,6 @@ fn prepare_pi_settings(
     settings.insert("enableSkillCommands".to_owned(), json!(true));
     append_settings_entry(&mut settings, "packages", "npm:pi-mcp-adapter")?;
     append_settings_entry(&mut settings, "extensions", "-builtin:mcp")?;
-    if let Some(config) = model_config {
-        if config.model_id != "default" {
-            let (provider, model) = config
-                .model_id
-                .split_once('/')
-                .filter(|(provider, model)| !provider.is_empty() && !model.is_empty())
-                .ok_or_else(|| anyhow!("Pi model must be specified as provider/model"))?;
-            settings.insert("defaultProvider".to_owned(), json!(provider));
-            settings.insert("defaultModel".to_owned(), json!(model));
-        }
-        if let Some(level) = &config.reasoning_level {
-            settings.insert("defaultThinkingLevel".to_owned(), json!(level));
-        }
-    }
     for source in skill_dirs {
         let source = if source.is_absolute() {
             source.clone()

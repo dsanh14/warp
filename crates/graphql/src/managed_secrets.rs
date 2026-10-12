@@ -11,7 +11,6 @@ pub enum ManagedSecretType {
     DockerRegistry,
     Dotenvx,
     OpenaiApiKey,
-    ProviderApiKey,
     RawValue,
 }
 
@@ -26,7 +25,6 @@ impl ManagedSecretType {
             ManagedSecretType::DockerRegistry => "docker_registry",
             ManagedSecretType::Dotenvx => "dotenvx",
             ManagedSecretType::OpenaiApiKey => "openai_api_key",
-            ManagedSecretType::ProviderApiKey => "provider_api_key",
             ManagedSecretType::RawValue => "raw_value",
         }
     }

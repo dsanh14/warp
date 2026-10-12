@@ -48,6 +48,7 @@ mod gemini;
 mod harness_persistence;
 mod json_utils;
 mod pi;
+mod pi_transcript;
 pub(crate) mod process_control;
 mod save_coordinator;
 mod skill_dirs_publish;
@@ -61,7 +62,7 @@ use codex::CodexHarness;
 use codex_transcript::CodexResumeInfo;
 use gemini::GeminiHarness;
 use harness_persistence::{HarnessPersistence, PersistenceOutcome};
-pub(super) use pi::pi_env_vars;
+use pi::pi_env_vars;
 pub(crate) use telemetry::ThirdPartyHarnessTelemetryEvent;
 
 const HARNESS_FAILURE_OUTPUT_TRUNCATION_MARKER: &str = "\n… harness output truncated …\n";
@@ -532,37 +533,31 @@ pub(crate) fn task_env_vars(
     task_env_vars_for_harness_name(task_id, parent_run_id, selected_harness)
 }
 
-/// Returns environment variables that configure the model for a third-party harness.
-/// Returns an empty map for Oz or when no model is specified.
+/// Returns the per-run environment for a third-party harness.
 ///
 /// We use the `ANTHROPIC_MODEL` env var rather than the `--model` CLI flag because
 /// the env var is the most reliable mechanism and avoids precedence conflicts with
 /// Claude Code's `settings.json`.
-pub(crate) fn harness_model_env_vars(
+pub(crate) fn harness_env_vars(
     selected_harness: Harness,
     third_party_harness_model_config: Option<&HarnessModelConfig>,
-) -> HashMap<OsString, OsString> {
+) -> Result<HashMap<OsString, OsString>> {
     let mut env_vars = HashMap::new();
-    let Some(model_id) = third_party_harness_model_config
-        .map(|config| config.model_id.as_str())
-        .filter(|id| !id.is_empty())
-    else {
-        return env_vars;
-    };
 
     match selected_harness {
         Harness::Claude => {
-            env_vars.insert(OsString::from("ANTHROPIC_MODEL"), OsString::from(model_id));
+            if let Some(model_id) = third_party_harness_model_config
+                .map(|config| config.model_id.as_str())
+                .filter(|id| !id.is_empty())
+            {
+                env_vars.insert(OsString::from("ANTHROPIC_MODEL"), OsString::from(model_id));
+            }
         }
-        Harness::Oz
-        | Harness::OpenCode
-        | Harness::Gemini
-        | Harness::Pi
-        | Harness::Codex
-        | Harness::Unknown => {}
+        Harness::Pi => return pi_env_vars(),
+        Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Codex | Harness::Unknown => {}
     }
 
-    env_vars
+    Ok(env_vars)
 }
 
 /// Indicates when the harness conversation is being saved.

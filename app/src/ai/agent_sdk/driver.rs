@@ -33,7 +33,7 @@ use warp_core::features::FeatureFlag;
 use warp_core::{safe_debug, safe_error, safe_info, safe_warn};
 use warp_errors::{ErrorExt, ReportErrorLogMode, register_error, report_error, report_if_error};
 use warp_graphql::ai::{AgentTaskState, PlatformErrorCode};
-use warp_managed_secrets::{ManagedSecretValue, provider_api_key_env_name};
+use warp_managed_secrets::ManagedSecretValue;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::r#async::executor::Background;
 use warpui::r#async::{FutureExt, TimeoutError, Timer};
@@ -52,8 +52,8 @@ use crate::ai::agent_sdk::driver::harness::exit_escalation::{
 };
 use crate::ai::agent_sdk::driver::harness::{
     HarnessCleanupDisposition, HarnessKind, HarnessRunner, ResumePayload, SavePoint,
-    ThirdPartyHarness, ThirdPartyHarnessTelemetryEvent, harness_model_env_vars, pi_env_vars,
-    renders_natively, task_env_vars,
+    ThirdPartyHarness, ThirdPartyHarnessTelemetryEvent, harness_env_vars, renders_natively,
+    task_env_vars,
 };
 use crate::ai::agent_sdk::environment_snapshot::{
     EnvironmentSnapshot, EnvironmentSnapshotReporter,
@@ -1227,18 +1227,14 @@ impl AgentDriver {
             parent_run_id.as_deref(),
             selected_harness,
         ));
-        env_vars.extend(harness_model_env_vars(
-            selected_harness,
-            third_party_harness_model_config.as_ref(),
-        ));
-        if selected_harness == Harness::Pi {
-            env_vars.extend(pi_env_vars().map_err(|error| {
-                AgentDriverError::HarnessConfigSetupFailed {
+        env_vars.extend(
+            harness_env_vars(selected_harness, third_party_harness_model_config.as_ref()).map_err(
+                |error| AgentDriverError::HarnessConfigSetupFailed {
                     harness: selected_harness.to_string(),
                     error,
-                }
-            })?);
-        }
+                },
+            )?,
+        );
         if let Some(dirs) = &workspace.factory_skill_dirs {
             env_vars.insert(
                 OsString::from(WARP_SKILL_DIRS_ENV),
@@ -5082,11 +5078,6 @@ fn typed_secret_env_names(secrets: &HashMap<String, ManagedSecretValue>) -> Hash
 fn typed_secret_entries(secret: &ManagedSecretValue) -> Vec<(&'static str, &str)> {
     match secret {
         ManagedSecretValue::RawValue { .. } => vec![],
-        ManagedSecretValue::ProviderApiKey {
-            provider, api_key, ..
-        } => provider_api_key_env_name(provider)
-            .map(|name| vec![(name, api_key.as_str())])
-            .unwrap_or_default(),
         ManagedSecretValue::AnthropicApiKey { api_key } => {
             vec![("ANTHROPIC_API_KEY", api_key.as_str())]
         }

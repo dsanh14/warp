@@ -10,8 +10,7 @@ use warp_cli::agent::{Harness, HarnessTransport};
 use crate::ai::agent_sdk::driver::AgentDriverError;
 use crate::ai::agent_sdk::driver::harness::claude_code::prepare_claude_environment_config;
 use crate::ai::agent_sdk::driver::harness::{
-    HarnessKind, harness_kind, harness_model_env_vars,
-    remove_claude_externally_managed_listener_env_vars,
+    HarnessKind, harness_env_vars, harness_kind, remove_claude_externally_managed_listener_env_vars,
 };
 use crate::ai::agent_sdk::{task_env_vars, validate_cli_installed};
 use crate::ai::ambient_agents::task::{
@@ -281,10 +280,10 @@ pub(super) async fn prepare_local_harness_child_launch(
     // Propagate the selected model to Claude Code via ANTHROPIC_MODEL.
     // Codex local children never receive a model override — the UI
     // ensures model_id is empty for local Codex.
-    env_vars.extend(harness_model_env_vars(
-        harness,
-        harness_model_config.as_ref(),
-    ));
+    env_vars.extend(
+        harness_env_vars(harness, harness_model_config.as_ref())
+            .map_err(|error| error.to_string())?,
+    );
 
     Ok(PreparedLocalHarnessLaunch {
         command,
