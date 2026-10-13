@@ -8,7 +8,7 @@ use ai::index::full_source_code_embedding::store_client::{IntermediateNode, Stor
 use ai::index::full_source_code_embedding::{
     self, CodebaseContextConfig, ContentHash, EmbeddingConfig, NodeHash, RepoMetadata,
 };
-use anyhow::anyhow;
+use anyhow::{Context as _, anyhow};
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
@@ -139,6 +139,7 @@ use warp_graphql::queries::task_git_credentials::{
 #[cfg(not(target_family = "wasm"))]
 use warp_graphql::queries::task_secrets::{ManagedSecretValue, TaskSecretsInput};
 use warp_multi_agent_api::ConversationData;
+use warp_server_client::PresignedDownloadResponse;
 
 use super::ServerApi;
 #[cfg(not(target_family = "wasm"))]
@@ -2881,13 +2882,15 @@ impl AIClient for ServerApi {
         // command and output grid contents.
         let response = self
             .get_public_api_response(&format!(
-                "agent/conversations/{conversation_id}/block-snapshot"
+                "agent/conversations/{conversation_id}/block-snapshot?redirect=false"
             ))
             .await?;
-        let json_bytes = response
-            .bytes()
+        let download = response
+            .json::<PresignedDownloadResponse>()
             .await
-            .map_err(|e| anyhow!("Failed to read block snapshot for {conversation_id}: {e}"))?;
+            .map_err(reqwest::Error::without_url)
+            .context("Failed to decode block snapshot download URL")?;
+        let json_bytes = self.base_client.download_presigned(&download.url).await?;
         SerializedBlock::from_json(&json_bytes)
     }
 

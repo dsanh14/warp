@@ -116,6 +116,36 @@ fn execution_bootstrap_server_api() -> ServerApi {
 }
 
 #[test]
+fn block_snapshot_resolves_url_before_deserializing_storage_bytes() {
+    let block =
+        super::SerializedBlock::new_for_test(b"command".to_vec(), b"\x1b[32moutput".to_vec());
+    let mut storage = Server::new();
+    let storage_request = storage
+        .mock("GET", "/block_snapshot.json")
+        .match_query(Matcher::Exact("X-Amz-Signature=test%2Bsignature".into()))
+        .match_header("x-warp-os-category", Matcher::Missing)
+        .with_status(200)
+        .with_body(block.to_json().unwrap())
+        .create();
+    let api_request = {
+        let mut server = warp_core::channel::ChannelState::mock_server();
+        server.mock("GET", "/api/v1/agent/conversations/test-block-download/block-snapshot")
+            .match_query(Matcher::UrlEncoded("redirect".into(), "false".into()))
+            .with_status(200)
+            .with_body(json!({"url": format!("{}/block_snapshot.json?X-Amz-Signature=test%2Bsignature", storage.url())}).to_string())
+            .create()
+    };
+    let result = block_on(execution_bootstrap_server_api().get_block_snapshot(
+        super::ServerConversationToken::new("test-block-download".into()),
+    ))
+    .unwrap();
+    assert_eq!(result.stylized_command, block.stylized_command);
+    assert_eq!(result.stylized_output, block.stylized_output);
+    api_request.assert();
+    storage_request.assert();
+}
+
+#[test]
 fn execution_bootstrap_fetches_config_secrets_and_attachments_once() {
     for supports_deferred_repositories in [false, true] {
         let mut response = execution_bootstrap_response();

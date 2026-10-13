@@ -213,6 +213,19 @@ impl Client {
         builder
     }
 
+    /// Builds a request without automatic Warp metadata, IAP tokens, or browser credentials.
+    /// Explicitly supplied headers are preserved.
+    pub fn request_without_warp_headers<U: IntoUrl>(
+        &self,
+        method: http::Method,
+        url: U,
+    ) -> RequestBuilder<'_> {
+        let wrapped = self.wrapped.request(method, url);
+        #[cfg(target_family = "wasm")]
+        let wrapped = wrapped.fetch_credentials_omit();
+        self.builder(wrapped, false, None)
+    }
+
     pub fn get<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
         let include_warp_headers = Self::include_warp_http_headers(url.clone());
         let iap_token = self.iap_token_for(url.clone());

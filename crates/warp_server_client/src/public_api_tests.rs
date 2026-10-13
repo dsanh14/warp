@@ -7,13 +7,80 @@ use warp_graphql::ai::PlatformErrorCode;
 use warp_graphql::platform_error::PlatformErrorMessageFormat;
 use warp_server_auth::auth_state::AuthState;
 
-use super::HttpStatusError;
+use super::{HttpStatusError, PresignedDownloadResponse};
 use crate::auth::AuthEvent;
 use crate::base_client::{
-    AGENT_SOURCE_HEADER, AuthenticatedGraphqlConfig, BaseClient, CLOUD_AGENT_ID_HEADER,
-    GraphqlRoutingConfig,
+    AGENT_SOURCE_HEADER, AMBIENT_WORKLOAD_TOKEN_HEADER, AuthenticatedGraphqlConfig, BaseClient,
+    CLOUD_AGENT_ID_HEADER, GraphqlRoutingConfig,
 };
 struct EmptyIapTokenProvider;
+
+#[test]
+fn presigned_download_keeps_api_context_off_storage() {
+    let mut storage = mockito::Server::new();
+    let query = "X-Amz-Signature=test%2Bsignature&key=a%2Fb&key=c+%20d";
+    let url = format!("{}/snapshot?{query}", storage.url());
+    let mut storage_request = storage
+        .mock("GET", "/snapshot")
+        .match_query(mockito::Matcher::Exact(query.into()))
+        .with_status(200)
+        .with_body("snapshot bytes");
+    for header in [
+        "x-oz-api-source",
+        "x-warp-client-id",
+        "x-warp-client-version",
+        "x-warp-os-category",
+        "x-warp-os-name",
+        "x-warp-os-version",
+        "x-warp-os-linux-kernel-version",
+        "x-warp-traceparent",
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        CLOUD_AGENT_ID_HEADER,
+        AMBIENT_WORKLOAD_TOKEN_HEADER,
+    ] {
+        storage_request = storage_request.match_header(header, mockito::Matcher::Missing);
+    }
+    let storage_request = storage_request.create();
+    let api_request = {
+        let mut server = ChannelState::mock_server();
+        server
+            .mock(
+                "GET",
+                "/api/v1/agent/conversations/test-download/block-snapshot",
+            )
+            .match_query(mockito::Matcher::UrlEncoded(
+                "redirect".into(),
+                "false".into(),
+            ))
+            .match_header("authorization", "Bearer bearer-token")
+            .match_header("x-warp-os-category", mockito::Matcher::Any)
+            .match_header("x-warp-os-name", mockito::Matcher::Any)
+            .match_header(AGENT_SOURCE_HEADER, "cloud-mode")
+            .match_header(CLOUD_AGENT_ID_HEADER, "ambient-task")
+            .match_header(AMBIENT_WORKLOAD_TOKEN_HEADER, "test-workload-token")
+            .with_status(200)
+            .with_body(serde_json::json!({"url": url}).to_string())
+            .create()
+    };
+    let auth_state = AuthState::new_logged_out_for_test();
+    auth_state.set_remote_server_bearer_token("bearer-token".into());
+    let (client, _) = base_client_with_auth(auth_state, Some("cloud-mode".into()), false);
+    client.set_ambient_agent_task_id(Some("ambient-task".into()));
+    let bytes = block_on(async {
+        let download = client
+            .get_public_api::<PresignedDownloadResponse>(
+                "agent/conversations/test-download/block-snapshot?redirect=false",
+            )
+            .await
+            .unwrap();
+        client.download_presigned(&download.url).await.unwrap()
+    });
+    assert_eq!(bytes.as_ref(), b"snapshot bytes");
+    api_request.assert();
+    storage_request.assert();
+}
 
 impl http_client::iap::IapTokenProvider for EmptyIapTokenProvider {
     fn cached_token(&self) -> Option<String> {

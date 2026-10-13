@@ -216,13 +216,14 @@ fn build_upload_request<'a>(
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case(CONTENT_LENGTH_HEADER_NAME));
 
-    let mut request = match method.as_str() {
-        "GET" => http_client.get(target.url),
-        "POST" => http_client.post(target.url),
-        "PUT" => http_client.put(target.url),
-        "DELETE" => http_client.delete(target.url),
+    let method = match method.as_str() {
+        "GET" => http::Method::GET,
+        "POST" => http::Method::POST,
+        "PUT" => http::Method::PUT,
+        "DELETE" => http::Method::DELETE,
         other => return Err(anyhow!("Unsupported HTTP method: {other}")),
     };
+    let mut request = http_client.request_without_warp_headers(method, target.url);
 
     for (name, value) in &target.headers {
         request = request.header(*name, *value);
@@ -263,6 +264,7 @@ async fn send_upload_request(
         .body(body)
         .send()
         .await
+        .map_err(reqwest::Error::without_url)
         .context(error_context.transport)?;
 
     ensure_upload_succeeded(response, error_context).await
@@ -331,6 +333,7 @@ async fn send_multipart_upload(
         .multipart(form)
         .send()
         .await
+        .map_err(reqwest::Error::without_url)
         .context(error_context.transport)?;
     ensure_upload_succeeded(response, error_context).await
 }

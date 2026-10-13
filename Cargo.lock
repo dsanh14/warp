@@ -16045,6 +16045,7 @@ dependencies = [
  "bincode",
  "blocking",
  "bounded-vec-deque",
+ "bytes",
  "cfg-if",
  "chrono",
  "cloud_object_client",
