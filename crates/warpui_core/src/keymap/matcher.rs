@@ -343,6 +343,41 @@ impl Matcher {
         }
     }
 
+    /// Returns the action of a binding whose trigger the user has customized, if the keystrokes
+    /// pending for `view_id` followed by `keystroke` complete that trigger in `ctx`.
+    ///
+    /// Unlike [`Self::push_keystroke`], this does not record the keystroke as pending; callers
+    /// that dispatch the returned action should call [`Self::clear_pending`].
+    pub fn match_customized_keystroke(
+        &self,
+        keystroke: &Keystroke,
+        view_id: EntityId,
+        ctx: &Context,
+    ) -> Option<Arc<dyn Action>> {
+        let pending = self
+            .pending
+            .get(&view_id)
+            .filter(|pending| pending.context.as_ref() == Some(ctx))
+            .map_or(&[][..], |pending| pending.keystrokes.as_slice());
+        self.keymap
+            .bindings()
+            .filter(|binding| binding.original_trigger.is_some())
+            .find(|binding| {
+                let Trigger::Keystrokes(keystrokes) = &binding.trigger else {
+                    return false;
+                };
+                keystrokes.len() == pending.len() + 1
+                    && keystrokes.starts_with(pending)
+                    && keystrokes[pending.len()] == *keystroke
+                    && binding.context_predicate.eval(ctx)
+            })
+            .map(|binding| binding.action.clone())
+    }
+
+    pub fn clear_pending(&mut self, view_id: EntityId) {
+        self.pending.remove(&view_id);
+    }
+
     // Attempt to match with a StandardAction.
     // This returns None or Action, never Pending.
     pub fn match_standard(&self, action: StandardAction, ctx: &Context) -> MatchResult {
