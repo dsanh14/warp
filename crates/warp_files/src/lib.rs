@@ -142,6 +142,7 @@ impl FileBackend {
 #[derive(Default)]
 struct LocalFile {
     path: Option<PathBuf>,
+    entry_path: Option<PathBuf>,
     version: Option<ContentVersion>,
     /// How this file is being watched for changes.
     watcher_type: WatcherType,
@@ -162,6 +163,7 @@ struct RepositorySubscription {
 
 impl LocalFile {
     fn new(path: PathBuf) -> Self {
+        let entry_path = path.clone();
         // If we cannot canonicalize the path, it could be because the file does not exist on disk yet.
         // In this case, keep its original input path.
         let canonicalized_path = CanonicalizedPath::try_from(&path)
@@ -169,6 +171,7 @@ impl LocalFile {
             .unwrap_or(path);
         Self {
             path: Some(canonicalized_path),
+            entry_path: Some(entry_path),
             version: None,
             watcher_type: WatcherType::None,
         }
@@ -366,6 +369,12 @@ impl FileModel {
         self.file_state
             .get_local(file_id)
             .and_then(|x| x.path.clone())
+    }
+
+    fn entry_path(&self, file_id: FileId) -> Option<PathBuf> {
+        self.file_state
+            .get_local(file_id)
+            .and_then(|file| file.entry_path.clone())
     }
 
     /// Register a remote file path and return a `FileId`.
@@ -865,7 +874,7 @@ impl FileModel {
             .boxed());
         }
         let file_path = self
-            .file_path(file_id)
+            .entry_path(file_id)
             .ok_or(FileSaveError::NoFilePath(file_id))?;
         if new_path == file_path {
             return self.save(file_id, content, version, ctx);
@@ -880,6 +889,17 @@ impl FileModel {
                         error: err,
                         path: file_path,
                     });
+                }
+
+                match same_file::is_same_file(&file_path, &new_path) {
+                    Ok(true) => {
+                        return Err(FileSaveError::Other(format!(
+                            "Cannot move {file_path:?} to {new_path:?}: both entries refer to the same file"
+                        )));
+                    }
+                    Ok(false) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(FileSaveError::IOError { error, path: new_path }),
                 }
 
                 // Make sure the components of the path we're moving to exists.
@@ -951,17 +971,11 @@ impl FileModel {
         match backend {
             FileBackend::Local(_) => {
                 let file_path = self
-                    .file_path(file_id)
+                    .entry_path(file_id)
                     .ok_or(FileSaveError::NoFilePath(file_id))?;
 
                 ctx.spawn(
                     async move {
-                        if let Err(err) = Self::ensure_parent_directories(&file_path).await {
-                            return Err(FileSaveError::IOError {
-                                error: err,
-                                path: file_path,
-                            });
-                        }
                         async_fs::remove_file(&file_path).await.map_err(|err| {
                             FileSaveError::IOError {
                                 error: err,

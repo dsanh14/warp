@@ -170,31 +170,39 @@ fn accept_reports_write_dispatch_failure() {
 }
 
 #[test]
-fn persist_action_distinguishes_moves_from_same_path_writes() {
-    let rename_op = DiffType::update(Vec::new(), Some("/tmp/new.rs".to_owned()));
+fn accept_normalized_same_path_move_reports_only_a_write() {
+    App::test((), |mut app| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.txt").to_string_lossy().to_string();
+        let target = dir
+            .path()
+            .join("./source.txt")
+            .to_string_lossy()
+            .to_string();
+        fs::write(&path, "original\n").unwrap();
 
-    assert!(matches!(
-        PersistAction::resolve(&rename_op, "/tmp/old.rs"),
-        PersistAction::Rename(_)
-    ));
-    // A "rename" to the same path is just a write.
-    assert!(matches!(
-        PersistAction::resolve(&rename_op, "/tmp/./new.rs"),
-        PersistAction::Write
-    ));
-}
+        let result = accept_local(
+            &mut app,
+            vec![FileDiff::new(
+                "original\n".to_owned(),
+                path.clone(),
+                DiffType::update(Vec::new(), Some(target)),
+            )],
+        )
+        .await;
 
-#[test]
-fn rename_outcome_reports_update_at_destination() {
-    let op = DiffType::update(Vec::new(), Some("/tmp/new.rs".to_owned()));
-    let diff = FileDiff::new("content\n".to_owned(), "/tmp/old.rs".to_owned(), op.clone());
-    let action = PersistAction::resolve(&op, "/tmp/old.rs");
-
-    let state = persist_outcome(&action, &diff, "/tmp/old.rs", "content!\n");
-
-    let updated = state.updated.expect("expected an updated file");
-    assert_eq!(updated.path, "/tmp/new.rs");
-    assert_eq!(state.deleted_paths, vec!["/tmp/old.rs"]);
+        let RequestFileEditsResult::Success {
+            deleted_files,
+            updated_files,
+            ..
+        } = result
+        else {
+            panic!("expected same-path write to succeed");
+        };
+        assert!(deleted_files.is_empty());
+        assert_eq!(updated_files[0].file_context.file_name, path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original\n");
+    });
 }
 
 #[test]

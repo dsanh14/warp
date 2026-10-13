@@ -393,6 +393,6 @@ fn remote_move_reports_disconnected_host_through_future_and_event() {
         assert!(matches!(&*error, FileSaveError::RemoteError(_)));
         let (event_id, event_error) = rx.recv().await.unwrap();
         assert_eq!(event_id, file_id);
-        assert!(Arc::ptr_eq(&error, &event_error));
+        assert_eq!(error.to_string(), event_error.to_string());
     });
 }

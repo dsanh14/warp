@@ -85,19 +85,10 @@ fn accept_deletes_file() {
 }
 
 async fn restore(app: &mut App, view: &ViewHandle<InlineDiffView>) {
-    let (tx, rx) = async_channel::unbounded();
-    app.update(|ctx| {
-        ctx.subscribe_to_view(view, move |_, event, _| match event {
-            InlineDiffViewEvent::FileSaved => tx.try_send(Ok(())).unwrap(),
-            InlineDiffViewEvent::FailedToSave { error } => {
-                tx.try_send(Err(error.to_string())).unwrap();
-            }
-            _ => {}
-        });
-    });
-    view.update(app, |view, ctx| view.restore_diff_base(ctx))
+    view.update(app, |view, ctx| view.restore_and_save_diff(ctx))
+        .unwrap()
+        .await
         .unwrap();
-    rx.recv().await.unwrap().unwrap();
 }
 
 #[test]
@@ -287,5 +278,42 @@ fn accept_propagates_delete_failure() {
 
         assert!(result.is_err());
         assert!(!path.exists());
+    });
+}
+
+#[test]
+fn overlapping_and_repeated_restores_do_not_repeat_a_move() {
+    App::test((), |mut app| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.txt");
+        let destination = dir.path().join("new.txt");
+        fs::write(&path, "original\n").unwrap();
+        let view = add_diff(
+            &mut app,
+            &path,
+            "original\n",
+            DiffType::update(Vec::new(), Some(destination.to_str().unwrap().to_owned())),
+        );
+        view.update(&mut app, |view, ctx| view.accept_and_save_diff(ctx))
+            .unwrap()
+            .await
+            .unwrap();
+
+        let first = view
+            .update(&mut app, |view, ctx| view.restore_and_save_diff(ctx))
+            .unwrap();
+        let overlapping = view
+            .update(&mut app, |view, ctx| view.restore_and_save_diff(ctx))
+            .unwrap();
+        first.await.unwrap();
+        overlapping.await.unwrap();
+        assert!(!destination.exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original\n");
+
+        fs::write(&path, "subsequent edit\n").unwrap();
+        restore(&mut app, &view).await;
+        restore(&mut app, &view).await;
+        assert_eq!(fs::read_to_string(&path).unwrap(), "subsequent edit\n");
+        assert!(!destination.exists());
     });
 }

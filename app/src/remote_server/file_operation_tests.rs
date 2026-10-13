@@ -39,6 +39,74 @@ fn add_server(
     (server, rx)
 }
 
+#[test]
+#[cfg(unix)]
+fn remote_delete_removes_link_without_touching_referent() {
+    App::test((), |mut app| async move {
+        let (server, responses) = add_server(&mut app);
+        let dir = tempfile::tempdir().unwrap();
+        let referent = dir.path().join("referent.txt");
+        let link = dir.path().join("link.txt");
+        fs::write(&referent, "original\n").unwrap();
+        std::os::unix::fs::symlink(&referent, &link).unwrap();
+        dispatch(
+            &mut app,
+            &server,
+            host_scoped_request::Message::DeleteFile(DeleteFile {
+                path: link.to_str().unwrap().to_owned(),
+            }),
+        );
+        let response = responses.recv().await.unwrap();
+        remote_server::host_response::delete_file_result(&response).unwrap();
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert_eq!(fs::read_to_string(&referent).unwrap(), "original\n");
+    });
+}
+
+#[test]
+#[cfg(unix)]
+fn remote_move_moves_link_entry_not_referent() {
+    App::test((), |mut app| async move {
+        let (server, responses) = add_server(&mut app);
+        let dir = tempfile::tempdir().unwrap();
+        let referent = dir.path().join("referent.txt");
+        let link = dir.path().join("link.txt");
+        let destination = dir.path().join("moved-link.txt");
+        fs::write(&referent, "original\n").unwrap();
+        std::os::unix::fs::symlink(&referent, &link).unwrap();
+
+        move_file(&mut app, &server, &link, destination.clone());
+        remote_server::host_response::rename_and_save_file_result(&responses.recv().await.unwrap())
+            .unwrap();
+
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert_eq!(fs::read_link(&destination).unwrap(), referent);
+        assert_eq!(fs::read_to_string(&referent).unwrap(), "updated\n");
+    });
+}
+
+#[test]
+fn remote_hard_link_collision_fails_before_writing() {
+    App::test((), |mut app| async move {
+        let (server, responses) = add_server(&mut app);
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        let destination = dir.path().join("alias.txt");
+        fs::write(&source, "original\n").unwrap();
+        fs::hard_link(&source, &destination).unwrap();
+
+        move_file(&mut app, &server, &source, destination.clone());
+        assert!(
+            remote_server::host_response::rename_and_save_file_result(
+                &responses.recv().await.unwrap()
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(&source).unwrap(), "original\n");
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "original\n");
+    });
+}
+
 fn dispatch(
     app: &mut App,
     server: &ModelHandle<ServerModel>,
