@@ -273,6 +273,7 @@ impl InlineDiffView {
             None
         }
     }
+
     #[cfg(not(target_family = "wasm"))]
     fn track_operation(
         &mut self,
