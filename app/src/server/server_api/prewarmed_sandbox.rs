@@ -8,6 +8,7 @@
 #![cfg_attr(target_family = "wasm", expect(dead_code))]
 
 use std::collections::HashMap;
+use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
@@ -15,6 +16,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use cloud_object_models::SourceRepo;
+use http::HeaderValue;
 use serde::{Deserialize, Serialize};
 use warpui::r#async::FutureExt as _;
 
@@ -28,7 +30,7 @@ pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The agent-scoped subset of an execution configuration that a standby can act on without a
 /// task. Mirrors `types.PrewarmedSandboxPreparation` in warp-server.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct PrewarmedSandboxPreparation {
     pub harness: String,
     #[serde(default)]
@@ -51,11 +53,29 @@ pub struct PrewarmedSandboxPreparation {
     pub computer_use_enabled: bool,
 }
 
+impl fmt::Debug for PrewarmedSandboxPreparation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PrewarmedSandboxPreparation")
+            .field("harness", &self.harness)
+            .field("repository_count", &self.repositories.len())
+            .field(
+                "deferred_repository_count",
+                &self.deferred_repositories.len(),
+            )
+            .field("setup_command_count", &self.setup_commands.len())
+            .field("mcp_server_count", &self.mcp_servers.len())
+            .field("skill_count", &self.skills.len())
+            .field("factory_skill_dir_count", &self.factory_skill_dirs.len())
+            .field("computer_use_enabled", &self.computer_use_enabled)
+            .finish()
+    }
+}
+
 /// Everything a standby sandbox needs to prepare itself.
 ///
 /// Carries ephemeral credentials in `git_credentials` and `managed_secrets`; neither may be
 /// logged or persisted.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct PrewarmedSandboxConfiguration {
     pub generation: String,
     pub preparation: PrewarmedSandboxPreparation,
@@ -66,6 +86,22 @@ pub struct PrewarmedSandboxConfiguration {
     #[serde(default)]
     pub managed_secrets: HashMap<String, String>,
     pub expires_at: DateTime<Utc>,
+}
+
+impl fmt::Debug for PrewarmedSandboxConfiguration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PrewarmedSandboxConfiguration")
+            .field("generation", &self.generation)
+            .field("preparation", &self.preparation)
+            .field(
+                "environment_variable_count",
+                &self.environment_variables.len(),
+            )
+            .field("git_credential_count", &self.git_credentials.len())
+            .field("managed_secret_count", &self.managed_secrets.len())
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 /// The preparation outcome a standby reports. The server accepts no other states.
@@ -136,6 +172,9 @@ impl ServerApi {
             .get_or_create_ambient_workload_token()
             .await?
             .context("A pre-warmed sandbox request requires a workload token")?;
+        let mut workload_token = HeaderValue::from_str(&workload_token)
+            .context("Invalid pre-warmed sandbox workload token header")?;
+        workload_token.set_sensitive(true);
         let auth_token = self
             .get_or_refresh_access_token()
             .await

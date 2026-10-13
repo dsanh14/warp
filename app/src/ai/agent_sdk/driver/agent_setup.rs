@@ -17,7 +17,7 @@ use warp_cli::skill::SkillSpec;
 use warp_core::features::FeatureFlag;
 use warp_core::safe_info;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
-use warpui::{ModelSpawner, SingletonEntity};
+use warpui::{Entity, ModelSpawner, SingletonEntity};
 
 use super::environment::{
     FACTORY_REPO_CLONE_URL_ENV_VAR, FACTORY_REPO_DIR_ENV_VAR,
@@ -44,6 +44,7 @@ impl AgentDriver {
     pub(crate) async fn prepare_resources(
         foreground: &ModelSpawner<Self>,
         mcp_specs: Vec<MCPSpec>,
+        global_skills: GlobalSkillResolution,
         setup_events: &SetupClientEventReporter,
     ) -> Result<PathBuf, AgentDriverError> {
         let mut workspace = foreground
@@ -51,7 +52,12 @@ impl AgentDriver {
             .await?
             .ok_or(AgentDriverError::InvalidRuntimeState)?;
         bootstrap_terminal(foreground, setup_events).await?;
-        let global_skills = prepare_global_skills(foreground, setup_events).await?;
+        setup_events
+            .record_result(
+                SetupStep::GlobalSkillRepoClone,
+                clone_global_skill_repos(foreground, &global_skills.repos),
+            )
+            .await?;
         let (workspace, snapshot_reporter, task_id) = foreground
             .spawn(move |me, ctx| {
                 let shell_type = me
@@ -226,8 +232,8 @@ pub(crate) struct GlobalSkillResolution {
 }
 
 /// Resolve global skill specs and the GitHub repositories that should be cloned for them.
-pub(crate) async fn resolve_global_skills(
-    foreground: &ModelSpawner<AgentDriver>,
+pub(crate) async fn resolve_global_skills<H: Entity>(
+    foreground: &ModelSpawner<H>,
 ) -> Result<GlobalSkillResolution, AgentDriverError> {
     if !FeatureFlag::OzPlatformSkills.is_enabled() {
         return Ok(GlobalSkillResolution {

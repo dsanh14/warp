@@ -3,10 +3,13 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::TimeDelta;
 use futures::executor::block_on;
+use warp_core::features::FeatureFlag;
 use warpui::App;
 use warpui::r#async::FutureExt as _;
 
 use super::*;
+use crate::auth::AuthStateProvider;
+use crate::auth::user::{PrincipalType, User};
 use crate::server::server_api::ai::MockAIClient;
 use crate::server::server_api::prewarmed_sandbox::tests::parse_configuration;
 
@@ -64,6 +67,52 @@ fn skill_checkout_collisions_fail_before_cloning_or_metadata_access() {
         ] {
             let mut config = parse_configuration();
             config.preparation.skills = specs.into_iter().map(str::to_owned).collect();
+            let error = prepare(&foreground, config, &setup_events)
+                .await
+                .unwrap_err();
+            let AgentDriverError::ConfigBuildFailed(source) = error else {
+                panic!("expected a checkout collision, got {error}");
+            };
+            assert!(
+                source.to_string().contains("share a clone directory name"),
+                "{source:#}"
+            );
+            assert!(!app.update(|ctx| ctx.has_singleton_model::<AgentDriver>()));
+        }
+    });
+}
+
+#[test]
+fn global_skill_checkout_collisions_fail_before_cloning_or_metadata_access() {
+    App::test((), |mut app| async move {
+        let _skills_enabled = FeatureFlag::OzPlatformSkills.override_enabled(true);
+        app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+        let runner = app.add_singleton_model(|_| AgentDriverRunner);
+        let foreground = runner.update(&mut app, |_, ctx| ctx.spawner());
+        let setup_events = SetupClientEventReporter::noop(
+            Arc::new(MockAIClient::new()),
+            app.background_executor(),
+        );
+        for (configured, global) in [
+            (vec![], vec!["another-org/warp:review"]),
+            (
+                vec!["first-org/tools:review"],
+                vec!["second-org/tools:review"],
+            ),
+            (
+                vec![],
+                vec!["first-org/tools:review", "second-org/tools:review"],
+            ),
+        ] {
+            app.read(|ctx| {
+                AuthStateProvider::as_ref(ctx).get().set_user(Some(User {
+                    principal_type: PrincipalType::ServiceAccount,
+                    global_skills: global.into_iter().map(str::to_owned).collect(),
+                    ..User::test()
+                }));
+            });
+            let mut config = parse_configuration();
+            config.preparation.skills = configured.into_iter().map(str::to_owned).collect();
             let error = prepare(&foreground, config, &setup_events)
                 .await
                 .unwrap_err();

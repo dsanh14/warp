@@ -22,6 +22,7 @@ use warpui::{AppContext, ModelSpawner, SingletonEntity};
 use crate::ai::agent_sdk::driver::agent_setup::configured_skills::{
     merge_skill_dirs, resolve_configured_skills,
 };
+use crate::ai::agent_sdk::driver::agent_setup::resolve_global_skills;
 use crate::ai::agent_sdk::driver::environment::{WorkspaceConfiguration, merge_repos_deduped};
 use crate::ai::agent_sdk::driver::{
     AgentDriver, AgentDriverError, AgentDriverOptions, IdleTimeoutSender, git_credentials,
@@ -257,8 +258,20 @@ async fn prepare(
         })
         .collect();
     // Skill clones share checkout directories with workspace repositories.
-    merge_repos_deduped(workspace.source_repos.clone(), skill_repositories)
-        .map_err(|error| AgentDriverError::ConfigBuildFailed(error.into()))?;
+    let preparation_repositories =
+        merge_repos_deduped(workspace.source_repos.clone(), skill_repositories)
+            .map_err(|error| AgentDriverError::ConfigBuildFailed(error.into()))?;
+    let global_skills = setup_events
+        .record_result(
+            SetupStep::GlobalSkillResolution,
+            resolve_global_skills(foreground),
+        )
+        .await?;
+    merge_repos_deduped(
+        preparation_repositories,
+        global_skills.repos.iter().map(SourceRepo::from).collect(),
+    )
+    .map_err(|error| AgentDriverError::ConfigBuildFailed(error.into()))?;
     let secrets = config
         .managed_secrets
         .into_iter()
@@ -320,7 +333,8 @@ async fn prepare(
         })
         .await??;
     let harness_working_dir =
-        AgentDriver::prepare_resources(&driver_spawner, mcp_specs, setup_events).await?;
+        AgentDriver::prepare_resources(&driver_spawner, mcp_specs, global_skills, setup_events)
+            .await?;
 
     Ok(PreparedSandbox {
         generation: config.generation,

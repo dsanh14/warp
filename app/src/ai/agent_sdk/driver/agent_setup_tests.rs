@@ -80,9 +80,17 @@ fn resource_preparation_rejects_a_consumed_workspace() {
             Arc::new(MockAIClient::new()),
             app.background_executor(),
         );
-        let error = AgentDriver::prepare_resources(&foreground, Vec::new(), &setup_events)
-            .await
-            .unwrap_err();
+        let error = AgentDriver::prepare_resources(
+            &foreground,
+            Vec::new(),
+            GlobalSkillResolution {
+                specs: Vec::new(),
+                repos: Vec::new(),
+            },
+            &setup_events,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(error, AgentDriverError::InvalidRuntimeState));
     });
 }

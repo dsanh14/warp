@@ -124,6 +124,57 @@ fn deserializes_a_server_configuration() {
 }
 
 #[test]
+fn configuration_debug_redacts_credentials_and_raw_preparation_values() {
+    let mut config = parse_configuration();
+    config
+        .managed_secrets
+        .insert("TOKEN".into(), "managed-secret-value".into());
+    config.environment_variables.insert(
+        "WARP_FACTORY_REPO_CLONE_URL".into(),
+        "https://environment-secret-value@example.com/repo.git".into(),
+    );
+    config.git_credentials[0].token = "git-secret-value".into();
+    config.preparation.setup_commands = vec!["login --token setup-secret-value".into()];
+    config.preparation.mcp_servers = serde_json::from_value(serde_json::json!({
+        "local": {
+            "command": "mcp",
+            "args": ["--token", "mcp-argument-secret-value"],
+            "env": {"TOKEN": "mcp-environment-secret-value"}
+        },
+        "remote": {
+            "url": "https://example.com/mcp",
+            "headers": {"Authorization": "Bearer mcp-header-secret-value"}
+        }
+    }))
+    .unwrap();
+
+    for output in [
+        format!("{config:?}"),
+        format!("{config:#?}"),
+        format!("{:?}", config.preparation),
+        format!("{:#?}", config.preparation),
+    ] {
+        for secret in [
+            "managed-secret-value",
+            "environment-secret-value",
+            "git-secret-value",
+            "setup-secret-value",
+            "mcp-argument-secret-value",
+            "mcp-environment-secret-value",
+            "mcp-header-secret-value",
+        ] {
+            assert!(!output.contains(secret), "Debug output exposed {secret}");
+        }
+        assert!(output.contains("mcp_server_count"));
+        assert!(output.contains("computer_use_enabled"));
+    }
+    let output = format!("{config:?}");
+    assert!(output.contains("abc123"));
+    assert!(output.contains("managed_secret_count: 2"));
+    assert!(output.contains("git_credential_count: 1"));
+}
+
+#[test]
 fn ready_status_sends_the_generation_as_the_manifest_hash() {
     let ready = PrewarmedSandboxStatusInput {
         generation: "abc123".to_string(),
@@ -246,6 +297,46 @@ fn all_endpoints_use_cached_credentials_and_expected_payloads() {
     config.assert();
     status.assert();
     heartbeat.assert();
+}
+
+#[test]
+#[cfg(not(feature = "skip_login"))]
+fn request_debug_redacts_both_credentials() {
+    let api = authenticated_client();
+    let mut client = http_client::Client::new_for_test();
+    client.set_before_request_fn(Box::new(|request, _| {
+        for name in ["authorization", PREWARMED_SANDBOX_WORKLOAD_TOKEN_HEADER] {
+            assert!(request.headers()[name].is_sensitive());
+        }
+        let debug = format!("{request:?}");
+        assert!(!debug.contains("test-access-token"));
+        assert!(!debug.contains("test-workload-token"));
+    }));
+    let mut server = ChannelState::mock_server();
+    let request = server
+        .mock("GET", "/internal/prewarmed-sandboxes/sandbox/config")
+        .match_header("authorization", "Bearer test-access-token")
+        .match_header(
+            PREWARMED_SANDBOX_WORKLOAD_TOKEN_HEADER,
+            "test-workload-token",
+        )
+        .with_status(204)
+        .expect(1)
+        .create();
+    drop(server);
+    let url = ServerApi::prewarmed_sandbox_url("sandbox", "config");
+
+    block_on(async {
+        let response = api
+            .prewarmed_sandbox_request(client.get(&url))
+            .await
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 204);
+    });
+    request.assert();
 }
 
 #[test]
