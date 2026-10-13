@@ -2,6 +2,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use enum_iterator::Sequence;
 use futures::FutureExt as _;
 use tracing::Instrument as _;
 use warpui::r#async::executor::Background;
@@ -177,11 +178,29 @@ impl OzRunTimelineEvent {
     }
 }
 
-#[derive(Clone, Copy)]
+/// Whether a [`SetupStep`] can run before a task exists.
+///
+/// A pre-warmed sandbox prepares itself with only an agent-scoped API key, so it can run
+/// every [`SetupScope::Agent`] step. [`SetupScope::Run`] steps need a task, execution,
+/// conversation, requester, or prompt, and wait until the sandbox is claimed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SetupScope {
+    /// Inputs are limited to team, agent service account, agent config snapshot,
+    /// environment, and runner.
+    Agent,
+    /// Inputs include task ID, execution ID, conversation ID, requester identity, or prompt.
+    Run,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Sequence)]
 pub(crate) enum SetupStep {
     TeamMetadataRefresh,
     WarpDriveSync,
     TaskDataFetch,
+    /// Applying the credentials and secrets a pre-warmed sandbox received from its
+    /// standby configuration. The agent-scoped counterpart to [`SetupStep::TaskDataFetch`],
+    /// which reaches the same end state through task-keyed APIs.
+    AgentCredentialsFetch,
     EnvironmentResolution,
     SkillRepoClone,
     TerminalBootstrap,
@@ -220,7 +239,56 @@ macro_rules! span_and_name {
 }
 
 impl SetupStep {
+    /// Whether this step can run before a task exists.
+    ///
+    /// Matched exhaustively on purpose: a new setup step must declare its scope rather than
+    /// defaulting into the pre-warmed path, where running run-scoped work would fail against
+    /// a sandbox that has no task.
+    pub(crate) fn scope(self) -> SetupScope {
+        match self {
+            Self::TeamMetadataRefresh
+            | Self::WarpDriveSync
+            | Self::AgentCredentialsFetch
+            | Self::EnvironmentResolution
+            | Self::SkillRepoClone
+            | Self::TerminalBootstrap
+            | Self::McpServerStartup
+            | Self::AgentProfileConfiguration
+            | Self::GlobalSkillResolution
+            | Self::GlobalSkillRepoClone
+            | Self::EnvironmentRepoClone
+            | Self::CacheSetup
+            | Self::EnvironmentSetupCommands
+            | Self::EnvironmentCodebaseIndexing
+            | Self::FileBasedMcpDiscovery
+            | Self::FileBasedMcpReadiness
+            | Self::InitialGlobalMcpScan
+            | Self::InitialGlobalMcpReadiness
+            | Self::EnvironmentSkillLoading
+            | Self::GlobalSkillLoading
+            | Self::SkillsDirsLoading => SetupScope::Agent,
+            // Task metadata and attachments are run-scoped, and this step reaches secrets and
+            // git credentials through task-keyed APIs even though the server resolves both
+            // from agent-scoped inputs. `AgentCredentialsFetch` is the pre-warmed equivalent.
+            Self::TaskDataFetch
+            // Provider credentials are time-boxed well below a standby's lifetime, so they
+            // must be minted fresh for the run rather than pre-warmed.
+            | Self::CloudProviderSetup
+            // Session ACLs name the requester, who is unknown before a claim.
+            | Self::SharedSessionEstablishment
+            | Self::ConversationResumeLoading
+            // Pre-warming is Oz-only, so these are unreachable from a standby.
+            | Self::ThirdPartyHarnessPreparation
+            | Self::ThirdPartyHarnessExternalConversation
+            | Self::ThirdPartyHarnessPreparationNotificationPluginInstall
+            | Self::ThirdPartyHarnessPreparationNotificationPluginUpdate
+            | Self::ThirdPartyHarnessPreparationPlatformPluginInstall
+            | Self::ThirdPartyHarnessPreparationPlatformPluginUpdate => SetupScope::Run,
+        }
+    }
+
     fn to_event_name_and_span(self) -> (&'static str, tracing::Span) {
+        log::debug!("Starting {:?} setup step: {self:?}", self.scope());
         match self {
             Self::TeamMetadataRefresh => {
                 span_and_name!("setup_team_metadata_refresh")
@@ -230,6 +298,9 @@ impl SetupStep {
             }
             Self::TaskDataFetch => {
                 span_and_name!("setup_task_metadata_secrets_attachments_git_credentials_fetch")
+            }
+            Self::AgentCredentialsFetch => {
+                span_and_name!("setup_agent_secrets_git_credentials_fetch")
             }
             Self::EnvironmentResolution => {
                 span_and_name!("setup_environment_resolution")
@@ -315,3 +386,7 @@ impl SetupStep {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "setup_observability_tests.rs"]
+mod tests;

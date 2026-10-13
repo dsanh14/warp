@@ -10,7 +10,9 @@ pub mod managed_mcp;
 pub mod managed_secrets;
 pub mod object;
 pub(crate) mod presigned_upload;
+pub mod prewarmed_sandbox;
 pub mod referral;
+pub mod repository;
 pub mod team;
 #[cfg(feature = "tui")]
 pub mod tui_onboarding;
@@ -1611,6 +1613,13 @@ impl ServerApiProvider {
 
     #[cfg_attr(target_family = "wasm", expect(dead_code))]
     pub fn get_harness_support_client(&self) -> Arc<dyn harness_support::HarnessSupportClient> {
+        self.server_api.clone()
+    }
+
+    #[cfg_attr(target_family = "wasm", expect(dead_code))]
+    pub fn get_prewarmed_sandbox_client(
+        &self,
+    ) -> Arc<dyn prewarmed_sandbox::PrewarmedSandboxClient> {
         self.server_api.clone()
     }
 }

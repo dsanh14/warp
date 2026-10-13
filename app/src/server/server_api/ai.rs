@@ -797,8 +797,8 @@ pub struct CreateFileArtifactUploadResponse {
     pub upload_target: FileArtifactUploadTargetInfo,
 }
 
-/// A single git credential entry returned by `taskGitCredentials`.
-#[derive(Clone)]
+/// Credentials for one managed Git host.
+#[derive(Clone, serde::Deserialize)]
 pub struct GitCredential {
     /// The provider's OAuth or installation access token.
     pub token: String,

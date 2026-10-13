@@ -37,6 +37,7 @@ use crate::ai::agent_sdk::environment_snapshot::{
 };
 use crate::ai::agent_sdk::setup_observability::{SetupClientEventReporter, SetupStep};
 use crate::ai::cloud_environments::{AmbientAgentEnvironment, SourceRepo};
+use crate::server::server_api::repository::ResolvedRepository;
 use crate::server::telemetry::secret_redaction::redact_secrets_in_string;
 use crate::terminal::model::BlockId;
 use crate::terminal::model::session::command_executor::shell_escape_single_quotes;
@@ -248,14 +249,10 @@ pub(crate) struct WorkspaceConfiguration {
     clone_requests: Vec<RepositoryCloneRequest>,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct ResolvedRepository {
-    pub source: SourceRepo,
-    pub checkout: Option<RepositoryHeadRef>,
-    pub clone_from: Option<SourceRepo>,
-    pub preserve_origin: bool,
-}
 impl WorkspaceConfiguration {
+    pub fn needs_preparation(&self) -> bool {
+        self.has_environment || !self.source_repos.is_empty() || !self.setup_commands.is_empty()
+    }
     pub fn from_legacy(
         environment: Option<&AmbientAgentEnvironment>,
         additional_source_repos: Vec<SourceRepo>,
@@ -292,7 +289,7 @@ impl WorkspaceConfiguration {
         Ok(Self {
             source_repos: repositories
                 .iter()
-                .map(|repo| repo.source.clone())
+                .map(ResolvedRepository::source_repo)
                 .collect(),
             deferred_repos,
             setup_commands,
@@ -576,11 +573,11 @@ fn target_name_conflict(
 /// Environment variable carrying the authenticated remote URL of a Factory's
 /// definition repository. Dispatch attaches it only to runs that execute as a
 /// Factory agent whose Factory definition lives in a Warp-managed repository.
-const FACTORY_REPO_CLONE_URL_ENV_VAR: &str = "WARP_FACTORY_REPO_CLONE_URL";
+pub(crate) const FACTORY_REPO_CLONE_URL_ENV_VAR: &str = "WARP_FACTORY_REPO_CLONE_URL";
 
 /// Environment variable carrying the directory, relative to the working
 /// directory, that the Factory definition repository is cloned into.
-const FACTORY_REPO_DIR_ENV_VAR: &str = "WARP_FACTORY_REPO_DIR";
+pub(crate) const FACTORY_REPO_DIR_ENV_VAR: &str = "WARP_FACTORY_REPO_DIR";
 
 /// Prepends the setup command that clones a Factory's definition repository
 /// when the dispatch attached the clone variables to this run, so the checkout
@@ -599,7 +596,9 @@ pub(super) fn prepend_factory_definition_clone(
     );
 }
 
-fn prepend_factory_definition_clone_for_values(
+/// [`prepend_factory_definition_clone`] against explicitly supplied values, for callers whose
+/// clone variables arrive out of band rather than in the process environment.
+pub(crate) fn prepend_factory_definition_clone_for_values(
     clone_url: &str,
     clone_dir: &str,
     shell_type: ShellType,
@@ -1011,7 +1010,7 @@ fn resolved_repository_clone_requests(
 ) -> Result<Vec<RepositoryCloneRequest>, PrepareEnvironmentError> {
     let source_repos: Vec<_> = repositories
         .iter()
-        .map(|repo| repo.source.clone())
+        .map(ResolvedRepository::source_repo)
         .collect();
     if merge_repos_deduped(source_repos, Vec::new())?.len() != repositories.len() {
         return Err(
@@ -1023,12 +1022,13 @@ fn resolved_repository_clone_requests(
     repositories
         .iter()
         .map(|repo| {
-            source_repo_identity(&repo.source)?;
-            let remote = repo.clone_from.as_ref().unwrap_or(&repo.source).clone();
+            let source = repo.source_repo();
+            source_repo_identity(&source)?;
+            let remote = repo.clone_from.as_ref().unwrap_or(&source).clone();
             source_repo_identity(&remote)?;
             Ok(RepositoryCloneRequest {
                 remote,
-                checkout_name: repo.source.repo.clone(),
+                checkout_name: repo.name.clone(),
                 checkout: repo.checkout.clone(),
                 remove_origin: !repo.preserve_origin,
                 fetch_branch_only: repo.clone_from.is_some()

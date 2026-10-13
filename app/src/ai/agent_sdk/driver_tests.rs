@@ -111,7 +111,7 @@ fn driver_keeps_uninterpreted_factory_experiments() {
             .unwrap();
         let mut options = crate::ai::agent_sdk::tests::agent_driver_options();
         options.experimental = Some(experimental.clone());
-        let driver = app.add_model(|ctx| AgentDriver::new(options, ctx).unwrap());
+        let driver = app.update(|ctx| AgentDriver::create(options, ctx).unwrap());
         driver.read(&app, |driver, _| {
             assert_eq!(driver.experimental, Some(experimental));
         });
@@ -1308,8 +1308,9 @@ fn split_loading_env_loads_all_global_loads_subset() {
             let spawner = ctx.spawner();
             ctx.spawn(
                 async move {
-                    AgentDriver::load_environment_skills(&spawner, env_repos).await;
-                    AgentDriver::load_global_skills(&spawner, global_specs, global_repos).await;
+                    super::agent_setup::load_environment_skills(&spawner, env_repos).await;
+                    super::agent_setup::load_global_skills(&spawner, global_specs, global_repos)
+                        .await;
                     let _ = done_tx.send(());
                 },
                 |_, _, _| {},
@@ -1429,8 +1430,9 @@ fn overlap_repo_in_env_and_global_loads_all_skills_without_duplicates() {
             let spawner = ctx.spawner();
             ctx.spawn(
                 async move {
-                    AgentDriver::load_environment_skills(&spawner, env_repos).await;
-                    AgentDriver::load_global_skills(&spawner, global_specs, global_repos).await;
+                    super::agent_setup::load_environment_skills(&spawner, env_repos).await;
+                    super::agent_setup::load_global_skills(&spawner, global_specs, global_repos)
+                        .await;
                     let _ = done_tx.send(());
                 },
                 |_, _, _| {},
@@ -1525,7 +1527,7 @@ fn warp_skill_dirs_env_loads_skills_as_home_tier() {
             let spawner = ctx.spawner();
             ctx.spawn(
                 async move {
-                    AgentDriver::load_skills_dirs(&spawner).await;
+                    super::agent_setup::load_skills_dirs(&spawner).await;
                     let _ = done_tx.send(());
                 },
                 |_, _, _| {},
@@ -1607,7 +1609,7 @@ fn warp_skill_dirs_env_relative_entries_resolve_against_working_dir() {
             let spawner = ctx.spawner();
             ctx.spawn(
                 async move {
-                    AgentDriver::load_skills_dirs(&spawner).await;
+                    super::agent_setup::load_skills_dirs(&spawner).await;
                     let _ = done_tx.send(());
                 },
                 |_, _, _| {},
@@ -2564,7 +2566,7 @@ fn deferred_skill_publication_uses_inventory_after_workspace_consumption() {
                             ManagedSecretValue::raw_value("1"),
                         );
                     }
-                    let driver = app.add_model(|ctx| AgentDriver::new(options, ctx).unwrap());
+                    let driver = app.update(|ctx| AgentDriver::create(options, ctx).unwrap());
                     let foreground = driver.update(&mut app, |driver, ctx| {
                         assert!(driver.workspace.take().unwrap().source_repos.is_empty());
                         assert_eq!(driver.has_deferred_repositories, should_activate);

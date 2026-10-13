@@ -13,6 +13,7 @@ use ai::api_keys::{ApiKeyManager, AwsCredentialsRefreshStrategy};
 use anyhow::Context;
 pub use driver::AgentDriver;
 use driver::AgentDriverError;
+use driver::agent_setup::configured_skills::{self, merge_skill_dirs};
 pub(crate) use driver::harness::{ClaudeHarness, task_env_vars, validate_cli_installed};
 use telemetry::CliTelemetryEvent;
 use tracing::Instrument as _;
@@ -69,9 +70,7 @@ use crate::ai::cloud_environments::{
     AmbientAgentEnvironment, CloudAmbientAgentEnvironment, SourceRepo,
 };
 use crate::ai::llms::LLMId;
-use crate::ai::skills::{
-    ResolveSkillError, ResolvedSkill, clone_repo_for_skill, resolve_skill_spec,
-};
+use crate::ai::skills::ResolvedSkill;
 use crate::auth::AuthStateProvider;
 use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
 use crate::cloud_object::CloudObjectLookup as _;
@@ -121,6 +120,8 @@ mod runner;
 mod schedule;
 mod secret;
 pub(crate) mod setup_observability;
+#[cfg(not(target_family = "wasm"))]
+mod standby;
 mod telemetry;
 #[cfg(test)]
 mod test_support;
@@ -274,39 +275,6 @@ fn dispatch_command(
     }
 }
 
-fn format_skill_resolution_error(err: ResolveSkillError) -> String {
-    match err {
-        ResolveSkillError::NotFound { skill } => {
-            format!("Skill '{skill}' not found")
-        }
-        ResolveSkillError::RepoNotFound { repo } => {
-            format!("Repository '{repo}' not found")
-        }
-        ResolveSkillError::Ambiguous { skill, candidates } => {
-            let mut msg = format!(
-                "Skill '{skill}' is ambiguous; specify as repo:skill_name\n\nCandidates:\n"
-            );
-            for path in candidates {
-                msg.push_str(&format!("- {}\n", path.display()));
-            }
-            msg
-        }
-        ResolveSkillError::OrgMismatch {
-            repo,
-            expected,
-            found,
-        } => {
-            format!("Repository '{repo}' found but belongs to org '{found}', expected '{expected}'")
-        }
-        ResolveSkillError::ParseFailed { path, message } => {
-            format!("Failed to parse skill file {}: {message}", path.display())
-        }
-        ResolveSkillError::CloneFailed { org, repo, message } => {
-            format!("Failed to clone repository '{org}/{repo}': {message}")
-        }
-    }
-}
-
 /// Run the agent with the provided command.
 fn run_agent(
     ctx: &mut AppContext,
@@ -385,6 +353,12 @@ fn run_agent(
                 return Err(anyhow::anyhow!("unexpected argument '--runner' found"));
             }
             ambient::run_ambient_agent(ctx, args)
+        }
+        #[cfg(not(target_family = "wasm"))]
+        AgentCommand::RunCloudStandby(args) => standby::run(ctx, args),
+        #[cfg(target_family = "wasm")]
+        AgentCommand::RunCloudStandby(_) => {
+            Err(anyhow::anyhow!("invalid value 'run-cloud-standby'"))
         }
         AgentCommand::Profile(sub) => profiles::run(ctx, global_options, sub),
         AgentCommand::List(args) => {
@@ -656,11 +630,7 @@ fn build_execution_task_and_options(
     }
     let providers = execution_config::providers(config.providers);
     let mut factory_skill_dirs = execution_config::factory_skill_dirs(config.factory_skill_dirs)?;
-    for dir in skill_discovery_dirs {
-        if !factory_skill_dirs.contains(&dir) {
-            factory_skill_dirs.push(dir);
-        }
-    }
+    merge_skill_dirs(&mut factory_skill_dirs, skill_discovery_dirs);
     let task = Task {
         prompt: AgentRunPrompt::ServerSide {
             skill: first_skill.map(|skill| skill.parsed_skill),
@@ -681,6 +651,7 @@ fn build_execution_task_and_options(
         idle_on_complete,
         idle_on_fail,
         secrets: Default::default(),
+        environment_variables: HashMap::new(),
         resume: None,
         cloud_providers: Vec::new(),
         workspace: {
@@ -717,36 +688,6 @@ fn build_execution_task_and_options(
         config.conversation_id.map(|id| id.into_inner()),
         providers,
     ))
-}
-fn selected_execution_skills(
-    skills: Vec<ResolvedSkill>,
-) -> Result<(Option<ResolvedSkill>, Vec<PathBuf>), AgentDriverError> {
-    let mut first = None;
-    let mut discovery_dirs = Vec::new();
-    for skill in skills {
-        let skills_dir = skill
-            .skill_path
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| {
-                AgentDriverError::SkillResolutionFailed(
-                    "Resolved skill has no parent skill directory".to_owned(),
-                )
-            })?
-            .to_path_buf();
-        if skills_dir.to_string_lossy().contains(',') {
-            return Err(AgentDriverError::SkillResolutionFailed(
-                "Resolved skill directory contains a comma".to_owned(),
-            ));
-        }
-        if !discovery_dirs.contains(&skills_dir) {
-            discovery_dirs.push(skills_dir);
-        }
-        if first.is_none() {
-            first = Some(skill);
-        }
-    }
-    Ok((first, discovery_dirs))
 }
 
 fn reconcile_task_harness(
@@ -1066,9 +1007,9 @@ impl AgentDriverRunner {
                         output_format,
                         share_requests,
                         task,
-                    );
+                    )
                 })
-                .await?;
+                .await??;
 
             Ok(())
         }
@@ -1336,66 +1277,15 @@ impl AgentDriverRunner {
             return Ok(None);
         };
 
-        // In sandboxed mode with a fully-qualified spec, clone the repo first.
-        let needs_clone = args.sandboxed && skill_spec.org.is_some() && skill_spec.repo.is_some();
-        if needs_clone {
-            let org = skill_spec.org.as_ref().expect("org checked above");
-            let repo_name = skill_spec.repo.as_ref().expect("repo checked above");
-            log::info!("Cloning {org}/{repo_name} for skill resolution in sandboxed mode");
-            setup_events
-                .record_result(SetupStep::SkillRepoClone, async {
-                    clone_repo_for_skill(org, repo_name, working_dir)
-                        .await
-                        .map_err(|err| {
-                            AgentDriverError::SkillResolutionFailed(format_skill_resolution_error(
-                                err,
-                            ))
-                        })
-                })
-                .await?;
-        }
-
-        let working_dir_buf = working_dir.to_path_buf();
-        let skill = foreground
-            .spawn(move |_, ctx| resolve_skill_spec(&skill_spec, &working_dir_buf, ctx))
-            .await?
-            .map_err(|err| {
-                AgentDriverError::SkillResolutionFailed(format_skill_resolution_error(err))
-            })?;
-        log::debug!(
-            "Resolved skill '{}' from {}",
-            skill.name,
-            skill.skill_path.display()
-        );
-        Ok(Some(skill))
-    }
-
-    async fn resolve_execution_skills(
-        foreground: &ModelSpawner<Self>,
-        args: &RunAgentArgs,
-        config: &ExecutionConfiguration,
-        working_dir: &Path,
-        setup_events: &SetupClientEventReporter,
-    ) -> Result<(Option<ResolvedSkill>, Vec<PathBuf>), AgentDriverError> {
-        if !config.skills.is_empty() && !FeatureFlag::OzPlatformSkills.is_enabled() {
-            return Err(AgentDriverError::SkillResolutionFailed(
-                "Skills are not supported in this client build".to_owned(),
-            ));
-        }
-        let mut resolved = Vec::with_capacity(config.skills.len());
-        for entry in &config.skills {
-            let spec: SkillSpec = entry
-                .spec
-                .parse()
-                .map_err(|error: String| AgentDriverError::SkillResolutionFailed(error))?;
-            let mut skill_args = args.clone();
-            skill_args.skill = Some(spec);
-            let skill = Self::resolve_skill(foreground, &skill_args, working_dir, setup_events)
-                .await?
-                .ok_or(AgentDriverError::InvalidRuntimeState)?;
-            resolved.push(skill);
-        }
-        selected_execution_skills(resolved)
+        configured_skills::resolve_skill(
+            foreground,
+            skill_spec,
+            args.sandboxed,
+            working_dir,
+            setup_events,
+        )
+        .await
+        .map(Some)
     }
 
     /// Build the AgentDriverOptions and Task, handling task creation or existing task setup.
@@ -1439,10 +1329,20 @@ impl AgentDriverRunner {
             attachments,
         }) = execution_data
         {
-            let (first_skill, skill_discovery_dirs) = Self::resolve_execution_skills(
+            let specs = config
+                .skills
+                .iter()
+                .map(|entry| {
+                    entry
+                        .spec
+                        .parse::<SkillSpec>()
+                        .map_err(AgentDriverError::SkillResolutionFailed)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let (first_skill, skill_discovery_dirs) = configured_skills::resolve_configured_skills(
                 foreground,
-                &args,
-                &config,
+                specs,
+                args.sandboxed,
                 &working_dir,
                 setup_events,
             )
@@ -1537,6 +1437,7 @@ impl AgentDriverRunner {
                     idle_on_complete: args.idle_on_complete.map(|d| d.into()),
                     idle_on_fail: args.effective_idle_on_fail().map(|d| d.into()),
                     secrets: Default::default(),
+                    environment_variables: HashMap::new(),
                     resume: None,
                     cloud_providers: Vec::new(),
                     workspace: driver::environment::WorkspaceConfiguration::default(),
@@ -2096,14 +1997,9 @@ impl AgentDriverRunner {
         output_format: OutputFormat,
         share_requests: Option<Vec<ShareRequest>>,
         task: driver::Task,
-    ) {
+    ) -> Result<(), AgentDriverError> {
         maybe_warn_team_api_key(ctx);
-
-        // Initializing the driver will fail if not logged in. Since we check that above, panic here - it's difficult to
-        // fallibly instantiate a UI framework model.
-        let driver = ctx.add_singleton_model(|ctx| {
-            AgentDriver::new(driver_options, ctx).expect("Could not initialize driver")
-        });
+        let driver = AgentDriver::create(driver_options, ctx)?;
 
         driver.update(ctx, |driver, ctx| {
             driver.set_output_format(output_format);
@@ -2125,6 +2021,7 @@ impl AgentDriverRunner {
                 }
             });
         });
+        Ok(())
     }
 }
 
@@ -2151,6 +2048,7 @@ fn command_requires_auth(command: &CliCommand) -> bool {
         CliCommand::Agent(agent_cmd) => match agent_cmd {
             AgentCommand::Run { .. } => true,
             AgentCommand::RunCloud { .. } => true,
+            AgentCommand::RunCloudStandby { .. } => true,
             AgentCommand::Profile(sub) => match sub {
                 AgentProfileCommand::List => true,
             },
@@ -2380,6 +2278,9 @@ fn command_to_telemetry_event(command: &CliCommand) -> CliTelemetryEvent {
             harness: args.harness.to_string(),
         },
         CliCommand::Agent(AgentCommand::RunCloud(_)) => CliTelemetryEvent::AgentRunAmbient,
+        CliCommand::Agent(AgentCommand::RunCloudStandby(_)) => {
+            CliTelemetryEvent::AgentRunCloudStandby
+        }
         CliCommand::Agent(AgentCommand::Profile(sub)) => match sub {
             AgentProfileCommand::List => CliTelemetryEvent::AgentProfileList,
         },
