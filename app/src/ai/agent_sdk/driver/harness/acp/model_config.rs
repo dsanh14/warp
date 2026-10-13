@@ -1,7 +1,9 @@
 //! Configures model and thinking settings through the ACP bridge.
 //!
-//! ACP-native harnesses use advertised protocol settings. Native CLI integrations retain their
-//! file/environment configuration contracts for compatibility.
+//! Every ACP session selects its model this way, from the settings the adapter advertises at
+//! `session/new`; the PTY transport keeps each CLI's own file/environment contract instead.
+//! A requested value the adapter does not offer fails the session rather than silently
+//! running on the adapter's default.
 use anyhow::{Context as _, Result, anyhow};
 
 use super::connection::AcpConnection;

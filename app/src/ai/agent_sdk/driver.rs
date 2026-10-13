@@ -1228,12 +1228,15 @@ impl AgentDriver {
             selected_harness,
         ));
         env_vars.extend(
-            harness_env_vars(selected_harness, third_party_harness_model_config.as_ref()).map_err(
-                |error| AgentDriverError::HarnessConfigSetupFailed {
-                    harness: selected_harness.to_string(),
-                    error,
-                },
-            )?,
+            harness_env_vars(
+                selected_harness,
+                harness_transport,
+                third_party_harness_model_config.as_ref(),
+            )
+            .map_err(|error| AgentDriverError::HarnessConfigSetupFailed {
+                harness: selected_harness.to_string(),
+                error,
+            })?,
         );
         if let Some(dirs) = &workspace.factory_skill_dirs {
             env_vars.insert(

@@ -4,17 +4,19 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
-use warp_cli::agent::Harness;
+use warp_cli::agent::{Harness, HarnessTransport};
 
 use super::super::harness_env_vars;
 use super::{
     PI_CODING_AGENT_DIR_ENV, pi_mcp_config, prepare_pi_settings, prepare_pi_system_prompt,
+    publish_skills_for_pi,
 };
 use crate::ai::mcp::JSONMCPServer;
+
 #[test]
 fn environment_allocates_isolated_session_directories() {
-    let first = harness_env_vars(Harness::Pi, None).unwrap();
-    let second = harness_env_vars(Harness::Pi, None).unwrap();
+    let first = harness_env_vars(Harness::Pi, HarnessTransport::Acp, None).unwrap();
+    let second = harness_env_vars(Harness::Pi, HarnessTransport::Acp, None).unwrap();
     let first_agent_dir = PathBuf::from(&first[OsStr::new(PI_CODING_AGENT_DIR_ENV)]);
     let second_agent_dir = PathBuf::from(&second[OsStr::new(PI_CODING_AGENT_DIR_ENV)]);
     let first_session_dir = PathBuf::from(&first[OsStr::new("PI_CODING_AGENT_SESSION_DIR")]);
@@ -31,7 +33,7 @@ fn environment_allocates_isolated_session_directories() {
 }
 
 #[test]
-fn settings_preserve_existing_values_and_add_only_external_skills() {
+fn settings_preserve_existing_values_and_are_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let settings_path = dir.path().join("settings.json");
     fs::write(
@@ -39,44 +41,47 @@ fn settings_preserve_existing_values_and_add_only_external_skills() {
         json!({
             "theme": "custom",
             "packages": ["npm:another-package"],
-            "skills": ["existing"],
             "extensions": ["custom"]
         })
         .to_string(),
     )
     .unwrap();
-    let skill_dirs = vec![
-        dir.path().join(".agents/skills"),
-        dir.path().join("factory/skills"),
-    ];
-    let harness_skills = dir.path().join("harness_skills");
     for _ in 0..2 {
-        prepare_pi_settings(
-            &settings_path,
-            dir.path(),
-            dir.path(),
-            &skill_dirs,
-            Some(&harness_skills),
-        )
-        .unwrap();
+        prepare_pi_settings(&settings_path).unwrap();
     }
 
     let settings: Value = serde_json::from_slice(&fs::read(settings_path).unwrap()).unwrap();
     assert_eq!(settings["theme"], "custom");
     assert_eq!(
         settings["packages"],
-        json!(["npm:another-package", "npm:pi-mcp-adapter"])
+        json!(["npm:another-package", "npm:pi-mcp-adapter@5.2.0"])
     );
     assert_eq!(settings["extensions"], json!(["custom", "-builtin:mcp"]));
-    assert_eq!(
-        settings["skills"],
-        json!([
-            "existing",
-            harness_skills,
-            dir.path().join("factory/skills")
-        ])
-    );
     assert_eq!(settings["defaultProjectTrust"], "always");
+}
+
+#[test]
+fn skills_are_published_into_the_agent_skill_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    let source = workspace.join("factory/skills/factory-skill");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("SKILL.md"), "---\nname: factory-skill\n---\n").unwrap();
+    let agent_dir = dir.path().join("agent");
+    fs::create_dir_all(&agent_dir).unwrap();
+
+    publish_skills_for_pi(
+        &workspace,
+        &agent_dir,
+        &[PathBuf::from("factory/skills")],
+        false,
+    )
+    .unwrap();
+
+    let link = agent_dir.join("skills/factory-skill");
+    assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(link.canonicalize().unwrap(), source.canonicalize().unwrap());
+    assert!(!workspace.join(".pi").exists());
 }
 
 #[test]

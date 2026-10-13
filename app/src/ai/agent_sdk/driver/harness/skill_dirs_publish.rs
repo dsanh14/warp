@@ -83,7 +83,7 @@ pub(crate) enum HarnessSupportSkills {
 
 /// The bundled directory holding Oz's harness-support skills, when the bundled resources are
 /// available.
-pub(super) fn bundled_harness_support_skills_dir() -> Option<PathBuf> {
+fn bundled_harness_support_skills_dir() -> Option<PathBuf> {
     bundled_resources_dir()
         .map(|root| root.join("bundled").join("harness_skills"))
         .filter(|dir| dir.is_dir())

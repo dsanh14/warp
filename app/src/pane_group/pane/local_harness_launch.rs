@@ -283,8 +283,12 @@ pub(super) async fn prepare_local_harness_child_launch(
     // Codex local children never receive a model override — the UI
     // ensures model_id is empty for local Codex.
     env_vars.extend(
-        harness_env_vars(harness, harness_model_config.as_ref())
-            .map_err(|error| error.to_string())?,
+        harness_env_vars(
+            harness,
+            HarnessTransport::Pty,
+            harness_model_config.as_ref(),
+        )
+        .map_err(|error| error.to_string())?,
     );
 
     Ok(PreparedLocalHarnessLaunch {

@@ -74,7 +74,7 @@ use super::gemini::{GeminiHarness, prepare_gemini_environment_config, publish_sk
 use super::harness_persistence::{
     HarnessPersistence, PersistenceOutcome, save_transcript_and_conversation_data,
 };
-use super::pi::prepare_pi_environment_config;
+use super::pi::{self, prepare_pi_environment_config, publish_skills_for_pi};
 use super::skill_dirs_publish::HarnessSupportSkills;
 use super::transcript_persistence::{
     UploadedTranscriptUsage, capture_transcript_with_retry, upload_captured_transcript,
@@ -153,8 +153,8 @@ impl AcpHarness {
                 has_deferred_repositories,
                 HarnessSupportSkills::Bundled,
             ),
-            // MCP servers are handed to the agent in `session/new` rather than written into
-            // `config.toml`, so they are not registered twice.
+            // MCP servers are handed to the agent in `session/new` and the model is selected
+            // through the session's config options, so neither is written into `config.toml`.
             Harness::Codex => {
                 prepare_codex_environment_config(
                     harness_working_dir,
@@ -162,7 +162,7 @@ impl AcpHarness {
                     resolved_env_vars,
                     resolved_secrets,
                     &HashMap::new(),
-                    third_party_harness_model_config,
+                    None,
                 )?;
                 publish_skills_for_codex(
                     workspace_root,
@@ -182,16 +182,22 @@ impl AcpHarness {
                     HarnessSupportSkills::Bundled,
                 )
             }
-            Harness::Pi => prepare_pi_environment_config(
-                workspace_root,
-                harness_working_dir,
-                system_prompt,
-                resolved_env_vars,
-                resolved_mcp_servers,
-                resolved_secrets,
-                third_party_harness_model_config,
-                skill_dirs,
-            ),
+            Harness::Pi => {
+                let agent_dir = prepare_pi_environment_config(
+                    harness_working_dir,
+                    system_prompt,
+                    resolved_env_vars,
+                    resolved_mcp_servers,
+                    resolved_secrets,
+                    third_party_harness_model_config,
+                )?;
+                publish_skills_for_pi(
+                    workspace_root,
+                    &agent_dir,
+                    skill_dirs,
+                    has_deferred_repositories,
+                )
+            }
             Harness::Oz | Harness::OpenCode | Harness::Unknown => Ok(()),
         }
     }
@@ -699,18 +705,22 @@ impl HarnessRunner for AcpHarnessRunner {
                 )
                 .await
                 .context("session/new failed")?;
-            match self.harness {
-                Harness::Pi => configure_model_and_thinking_through_acp(
-                    &connection,
-                    &mut session,
-                    self.model_config.as_ref(),
-                )
-                .await?,
-                Harness::Claude | Harness::Codex | Harness::Gemini => {}
-                Harness::Oz | Harness::OpenCode | Harness::Unknown => {}
-            }
-            let startup_banner = session.pi_acp_startup_info();
-            Ok::<_, anyhow::Error>((session.session_id, startup_banner))
+            configure_model_and_thinking_through_acp(
+                &connection,
+                &mut session,
+                self.model_config.as_ref(),
+            )
+            .await?;
+            let suppressed_startup_message = match self.harness {
+                Harness::Pi => pi::startup_message(&session.meta),
+                Harness::Claude
+                | Harness::Codex
+                | Harness::Gemini
+                | Harness::Oz
+                | Harness::OpenCode
+                | Harness::Unknown => None,
+            };
+            Ok::<_, anyhow::Error>((session.session_id, suppressed_startup_message))
         }
         .fuse();
         pin_mut!(handshake);
@@ -721,7 +731,7 @@ impl HarnessRunner for AcpHarnessRunner {
                 Err(anyhow!("the agent did not complete its handshake within {HANDSHAKE_TIMEOUT:?}"))
             }
         };
-        let (session_id, startup_banner) = match session_id {
+        let (session_id, suppressed_startup_message) = match session_id {
             Ok(session) => session,
             Err(error) => {
                 connection.close().await;
@@ -797,7 +807,7 @@ impl HarnessRunner for AcpHarnessRunner {
             run_id,
             turn: Mutex::new(turn),
             session_id,
-            startup_banner: Mutex::new(startup_banner),
+            suppressed_startup_message: Mutex::new(suppressed_startup_message),
             prompt_text: self.prompt_text.clone(),
             attachments: self.attachments.clone(),
             conversation_id: local_conversation_id,
@@ -910,9 +920,10 @@ struct TurnDriver {
     /// The currently open request stream.
     turn: Mutex<ExternalHarnessTurn>,
     session_id: String,
-    /// Startup text the adapter announced at `session/new` and will stream once as an agent
-    /// message. Taken when that chunk is dropped.
-    startup_banner: Mutex<Option<String>>,
+    /// Text the adapter announced at `session/new` and will also stream once as an agent
+    /// message chunk. That chunk is not part of any response, so it is dropped on arrival and
+    /// this is cleared.
+    suppressed_startup_message: Mutex<Option<String>>,
     prompt_text: String,
     attachments: Arc<AttachmentResolver>,
     conversation_id: AIConversationId,
@@ -1087,9 +1098,9 @@ impl TurnDriver {
             }
         };
         if let SessionUpdate::AgentMessageChunk { content, .. } = &params.update {
-            let mut banner = self.startup_banner.lock();
-            if banner.as_deref() == Some(content.as_text().trim()) {
-                banner.take();
+            let mut suppressed = self.suppressed_startup_message.lock();
+            if suppressed.as_deref() == Some(content.as_text().trim()) {
+                suppressed.take();
                 return Ok(());
             }
         }

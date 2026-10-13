@@ -539,17 +539,19 @@ pub(crate) fn task_env_vars(
 
 /// Returns the per-run environment for a third-party harness.
 ///
-/// We use the `ANTHROPIC_MODEL` env var rather than the `--model` CLI flag because
-/// the env var is the most reliable mechanism and avoids precedence conflicts with
-/// Claude Code's `settings.json`.
+/// Model selection is carried in the environment only for the PTY transport; ACP sessions
+/// select their model through the protocol instead. We use the `ANTHROPIC_MODEL` env var
+/// rather than the `--model` CLI flag because the env var is the most reliable mechanism and
+/// avoids precedence conflicts with Claude Code's `settings.json`.
 pub(crate) fn harness_env_vars(
     selected_harness: Harness,
+    transport: HarnessTransport,
     third_party_harness_model_config: Option<&HarnessModelConfig>,
 ) -> Result<HashMap<OsString, OsString>> {
     let mut env_vars = HashMap::new();
 
-    match selected_harness {
-        Harness::Claude => {
+    match (selected_harness, transport) {
+        (Harness::Claude, HarnessTransport::Pty) => {
             if let Some(model_id) = third_party_harness_model_config
                 .map(|config| config.model_id.as_str())
                 .filter(|id| !id.is_empty())
@@ -557,8 +559,12 @@ pub(crate) fn harness_env_vars(
                 env_vars.insert(OsString::from("ANTHROPIC_MODEL"), OsString::from(model_id));
             }
         }
-        Harness::Pi => return pi_env_vars(),
-        Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Codex | Harness::Unknown => {}
+        (Harness::Pi, _) => return pi_env_vars(),
+        (Harness::Claude, HarnessTransport::Acp)
+        | (
+            Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Codex | Harness::Unknown,
+            _,
+        ) => {}
     }
 
     Ok(env_vars)

@@ -8,17 +8,20 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, anyhow};
 use serde_json::{Map, Value, json};
 use tempfile::Builder;
+use warp_core::safe_info;
 use warp_managed_secrets::ManagedSecretValue;
 
 use super::JSONMCPServer;
 use super::json_utils::{read_json_file_or_default, write_json_file};
-use super::skill_dirs_publish::bundled_harness_support_skills_dir;
+use super::skill_dirs_publish::{HarnessSupportSkills, publish_skills_for_harness};
 use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::ai::mcp::JSONTransportType;
 
 const PI_PACKAGE_DIR_ENV: &str = "PI_PACKAGE_DIR";
 const SIDECAR_PI_PACKAGE_DIR: &str = "/mnt/pi-cli-sidecar/usr/local/lib/pi-packages";
-const PI_MCP_ADAPTER_PACKAGE: &str = "npm:pi-mcp-adapter";
+/// Pinned to the version baked into the sidecar image so native installs resolve the same
+/// adapter the seeded extension tree carries.
+const PI_MCP_ADAPTER_PACKAGE: &str = "npm:pi-mcp-adapter@5.2.0";
 pub(super) const PI_CODING_AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";
 
 /// Pi's installation assets root, when a run supplies one: a process-level `PI_PACKAGE_DIR`,
@@ -69,17 +72,29 @@ pub(super) fn pi_env_vars() -> Result<HashMap<OsString, OsString>> {
     Ok(env_vars)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The startup notice pi-acp attaches to `session/new`, when it has one. pi-acp also streams
+/// the same text as the session's first agent message chunk, ahead of any prompt, so callers
+/// can recognize and drop that chunk. With `quietStartup` set this is only ever the "new Pi
+/// version available" notice, which pi-acp produces by querying the npm registry on every new
+/// session and offers no way to turn off.
+pub(super) fn startup_message(session_meta: &Value) -> Option<String> {
+    session_meta
+        .pointer("/piAcp/startupInfo")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+}
+
+/// Writes Pi's per-run configuration into its agent directory and returns that directory.
 pub(super) fn prepare_pi_environment_config(
-    workspace_root: &Path,
     harness_working_dir: &Path,
     system_prompt: Option<&str>,
     resolved_env_vars: &HashMap<OsString, OsString>,
     resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
     resolved_secrets: &HashMap<String, ManagedSecretValue>,
     third_party_harness_model_config: Option<&HarnessModelConfig>,
-    skill_dirs: &[PathBuf],
-) -> Result<()> {
+) -> Result<PathBuf> {
     if let Some(config) = third_party_harness_model_config
         && config.model_id != "default"
         && !config
@@ -109,13 +124,7 @@ pub(super) fn prepare_pi_environment_config(
             .context("Failed to seed Pi adapter packages")?,
         None => log::info!("Pi will install {PI_MCP_ADAPTER_PACKAGE} on launch"),
     }
-    prepare_pi_settings(
-        &agent_dir.join("settings.json"),
-        workspace_root,
-        harness_working_dir,
-        skill_dirs,
-        bundled_harness_support_skills_dir().as_deref(),
-    )?;
+    prepare_pi_settings(&agent_dir.join("settings.json"))?;
     if let Some(prompt) = system_prompt {
         prepare_pi_system_prompt(&agent_dir, harness_working_dir, prompt)?;
     }
@@ -157,38 +166,47 @@ pub(super) fn prepare_pi_environment_config(
             "Failed to serialize Pi model endpoint overrides",
         )?;
     }
+    Ok(agent_dir)
+}
+
+/// Publishes configured and bundled skills under `<agent_dir>/skills`, Pi's agent-level skill
+/// root. The agent directory is private to the run, so nothing is written into the repository
+/// and no git exclusion is needed.
+pub(super) fn publish_skills_for_pi(
+    workspace_root: &Path,
+    agent_dir: &Path,
+    skill_dirs: &[PathBuf],
+    has_deferred_repositories: bool,
+) -> Result<()> {
+    let skill_root = agent_dir.join("skills");
+    let published = publish_skills_for_harness(
+        &skill_root,
+        workspace_root,
+        warp_isolation_platform::detect().is_some(),
+        skill_dirs,
+        has_deferred_repositories,
+        HarnessSupportSkills::Bundled,
+    )?;
+    if !published.is_empty() {
+        let published = published.len();
+        safe_info!(
+            safe: ("Published {published} skill(s) to the Pi skill root"),
+            full: (
+                "Published {published} skill(s) to Pi skill root {}",
+                skill_root.display()
+            )
+        );
+    }
     Ok(())
 }
 
-fn prepare_pi_settings(
-    settings_path: &Path,
-    workspace_root: &Path,
-    cwd: &Path,
-    skill_dirs: &[PathBuf],
-    harness_skills_dir: Option<&Path>,
-) -> Result<()> {
+fn prepare_pi_settings(settings_path: &Path) -> Result<()> {
     let mut settings: Map<String, Value> = read_json_file_or_default(settings_path)?;
     settings.insert("defaultProjectTrust".to_owned(), json!("always"));
     settings.insert("quietStartup".to_owned(), json!(true));
     settings.insert("enableSkillCommands".to_owned(), json!(true));
     append_settings_entry(&mut settings, "packages", PI_MCP_ADAPTER_PACKAGE)?;
     append_settings_entry(&mut settings, "extensions", "-builtin:mcp")?;
-    if let Some(dir) = harness_skills_dir {
-        append_settings_entry(&mut settings, "skills", &dir.display().to_string())?;
-    }
-    for source in skill_dirs {
-        let source = if source.is_absolute() {
-            source.clone()
-        } else {
-            workspace_root.join(source)
-        };
-        let discovered_upwards = cwd
-            .ancestors()
-            .any(|ancestor| source == ancestor.join(".agents/skills"));
-        if !discovered_upwards {
-            append_settings_entry(&mut settings, "skills", &source.display().to_string())?;
-        }
-    }
     write_json_file(settings_path, &settings, "Failed to serialize Pi settings")
 }
 
