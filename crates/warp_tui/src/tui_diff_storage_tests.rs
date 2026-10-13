@@ -1,6 +1,5 @@
 use std::fs;
 
-use warp_core::HostId;
 use warpui::App;
 
 use super::*;
@@ -103,12 +102,18 @@ fn accept_renames_and_reports_source_as_deleted() {
         )
         .await;
 
-        let RequestFileEditsResult::Success { deleted_files, .. } = result else {
+        let RequestFileEditsResult::Success {
+            deleted_files,
+            updated_files,
+            ..
+        } = result
+        else {
             panic!("expected rename to succeed");
         };
         assert_eq!(fs::read_to_string(&new_path).unwrap(), "content\n");
         assert!(!Path::new(&old_path).exists());
         assert_eq!(deleted_files, vec![old_path]);
+        assert_eq!(updated_files[0].file_context.file_name, new_path);
     });
 }
 
@@ -165,47 +170,31 @@ fn accept_reports_write_dispatch_failure() {
 }
 
 #[test]
-fn persist_action_renames_only_on_local_sessions() {
+fn persist_action_distinguishes_moves_from_same_path_writes() {
     let rename_op = DiffType::update(Vec::new(), Some("/tmp/new.rs".to_owned()));
 
     assert!(matches!(
-        PersistAction::resolve(&rename_op, &DiffSessionType::Local, "/tmp/old.rs"),
+        PersistAction::resolve(&rename_op, "/tmp/old.rs"),
         PersistAction::Rename(_)
-    ));
-    // Remote sessions have no rename primitive: the file is written in place.
-    assert!(matches!(
-        PersistAction::resolve(
-            &rename_op,
-            &DiffSessionType::Remote(HostId::new("host".to_owned())),
-            "/tmp/old.rs"
-        ),
-        PersistAction::Write
     ));
     // A "rename" to the same path is just a write.
     assert!(matches!(
-        PersistAction::resolve(&rename_op, &DiffSessionType::Local, "/tmp/new.rs"),
+        PersistAction::resolve(&rename_op, "/tmp/./new.rs"),
         PersistAction::Write
     ));
 }
 
 #[test]
-fn remote_rename_outcome_reports_update_at_original_path() {
-    // The reported outcome must match the actual write: a remote rename falls
-    // back to writing the original path, so nothing is deleted and the update
-    // is reported at the original path — not the rename target.
+fn rename_outcome_reports_update_at_destination() {
     let op = DiffType::update(Vec::new(), Some("/tmp/new.rs".to_owned()));
     let diff = FileDiff::new("content\n".to_owned(), "/tmp/old.rs".to_owned(), op.clone());
-    let action = PersistAction::resolve(
-        &op,
-        &DiffSessionType::Remote(HostId::new("host".to_owned())),
-        "/tmp/old.rs",
-    );
+    let action = PersistAction::resolve(&op, "/tmp/old.rs");
 
     let state = persist_outcome(&action, &diff, "/tmp/old.rs", "content!\n");
 
     let updated = state.updated.expect("expected an updated file");
-    assert_eq!(updated.path, "/tmp/old.rs");
-    assert_eq!(state.deleted_paths, Vec::<String>::new());
+    assert_eq!(updated.path, "/tmp/new.rs");
+    assert_eq!(state.deleted_paths, vec!["/tmp/old.rs"]);
 }
 
 #[test]

@@ -60,8 +60,7 @@ pub enum FileModelEvent {
     },
 }
 
-/// Resolves with the outcome of one dispatched save. The sender is only
-/// dropped on app teardown, in which case the outcome is treated as success.
+/// Resolves with the outcome of one dispatched file operation.
 pub type SaveFuture = BoxFuture<'static, Result<(), Arc<FileSaveError>>>;
 
 impl FileModelEvent {
@@ -807,8 +806,8 @@ impl FileModel {
         Ok(async move { rx.await.unwrap_or(Ok(())) }.boxed())
     }
 
-    /// Renames a file and also saves its content, returning a future that
-    /// resolves with the write outcome.
+    /// Saves content before a native rename; a rename failure leaves the saved content at the source.
+    /// A same-path target is an ordinary save. Returns a future resolving with the operation outcome.
     // TODO: refactor this against [`FileModel::save`].
     pub fn rename_and_save(
         &mut self,
@@ -818,9 +817,59 @@ impl FileModel {
         version: ContentVersion,
         ctx: &mut ModelContext<Self>,
     ) -> Result<SaveFuture, FileSaveError> {
+        let backend = self
+            .file_state
+            .get(file_id)
+            .ok_or(FileSaveError::NoFilePath(file_id))?;
+        if let FileBackend::Remote { host_id, path } = backend {
+            let new_path = new_path.to_str().ok_or_else(|| {
+                FileSaveError::RemoteError("Invalid UTF-8 move target".to_owned())
+            })?;
+            let new_path = StandardizedPath::try_new(new_path)
+                .map_err(|error| FileSaveError::RemoteError(error.to_string()))?;
+            if &new_path == path {
+                return self.save(file_id, content, version, ctx);
+            }
+            let handle = RemoteServerManager::as_ref(ctx).host_request_handle(host_id);
+            let path = path.to_string();
+            let new_path = new_path.to_string();
+            let (tx, rx) = oneshot::channel();
+            ctx.spawn(
+                async move { handle.rename_and_save_file(path, new_path, content).await },
+                move |me, result, ctx| {
+                    let result = result
+                        .map_err(|error| Arc::new(FileSaveError::RemoteError(error.to_string())));
+                    match &result {
+                        Ok(()) => {
+                            me.set_version(file_id, version);
+                            ctx.emit(FileModelEvent::FileSaved {
+                                id: file_id,
+                                version,
+                            });
+                        }
+                        Err(error) => ctx.emit(FileModelEvent::FailedToSave {
+                            id: file_id,
+                            error: error.clone(),
+                        }),
+                    }
+                    let _ = tx.send(result);
+                },
+            );
+            return Ok(async move {
+                rx.await.unwrap_or_else(|_| {
+                    Err(Arc::new(FileSaveError::Other(
+                        "Remote move completion was cancelled".to_owned(),
+                    )))
+                })
+            }
+            .boxed());
+        }
         let file_path = self
             .file_path(file_id)
             .ok_or(FileSaveError::NoFilePath(file_id))?;
+        if new_path == file_path {
+            return self.save(file_id, content, version, ctx);
+        }
 
         let (tx, rx) = oneshot::channel();
         ctx.spawn(
@@ -852,10 +901,9 @@ impl FileModel {
                 // Now rename.
                 async_fs::rename(&file_path, &new_path)
                     .await
-                    .map_err(|err| FileSaveError::IOError {
-                        error: err,
-                        path: file_path.clone(),
-                    })
+                    .map_err(|error| FileSaveError::Other(format!(
+                        "Saved content at {file_path:?}, but failed to rename to {new_path:?}: {error}"
+                    )))
             },
             move |me, write_result: Result<(), FileSaveError>, ctx| {
                 let result = write_result.map_err(Arc::new);
@@ -876,7 +924,14 @@ impl FileModel {
             },
         );
 
-        Ok(async move { rx.await.unwrap_or(Ok(())) }.boxed())
+        Ok(async move {
+            rx.await.unwrap_or_else(|_| {
+                Err(Arc::new(FileSaveError::Other(
+                    "Move completion was cancelled".to_owned(),
+                )))
+            })
+        }
+        .boxed())
     }
 
     /// Deletes the specified file, returning a future that resolves with the

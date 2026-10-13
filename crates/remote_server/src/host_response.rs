@@ -51,6 +51,16 @@ pub fn write_file_result(msg: &ServerMessage) -> Result<(), String> {
     )
 }
 
+/// Interprets a [`ServerMessage`] as the result of a `RenameAndSaveFile` request.
+pub fn rename_and_save_file_result(msg: &ServerMessage) -> Result<(), String> {
+    file_op_result!(
+        msg,
+        server_message::Message::RenameAndSaveFileResponse,
+        crate::proto::rename_and_save_file_response::Result,
+        "RenameAndSaveFile"
+    )
+}
+
 /// Interprets a [`ServerMessage`] as the result of a `SaveBuffer` request.
 pub fn save_buffer_result(msg: &ServerMessage) -> Result<(), String> {
     file_op_result!(
