@@ -49,7 +49,7 @@ message HostScopedRequest {
     GitGenerateCommitMessageRequest git_generate_commit_message = 18;
     GitGetCommittedBranchFilesRequest git_get_committed_branch_files = 19;
     RipgrepSearchRequest ripgrep_search = 21;
-    RenameAndSaveFile rename_and_save_file = 22;
+    RenameFile rename_file = 22;
   }
 }
 
@@ -126,7 +126,7 @@ message ServerMessage {
     GitHubRepositoryInfoPush github_repository_info_push = 36;
     RipgrepSearchResponse ripgrep_search_response = 37;
     RemoteAgentContextSnapshot remote_agent_context_snapshot = 33;
-    RenameAndSaveFileResponse rename_and_save_file_response = 38;
+    RenameFileResponse rename_file_response = 38;
   }
 }
 
@@ -389,20 +389,20 @@ message WriteFileResponse {
 
 message WriteFileSuccess {}
 
-message RenameAndSaveFile {
+message RenameFile {
   string path = 1;
   string new_path = 2;
   string content = 3;
 }
 
-message RenameAndSaveFileResponse {
+message RenameFileResponse {
   oneof result {
-    RenameAndSaveFileSuccess success = 1;
+    RenameFileSuccess success = 1;
     FileOperationError error = 2;
   }
 }
 
-message RenameAndSaveFileSuccess {}
+message RenameFileSuccess {}
 
 // Client → server: delete a file.
 message DeleteFile {

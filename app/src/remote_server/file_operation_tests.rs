@@ -8,7 +8,7 @@ use lsp::LspManagerModel;
 use prost::Message;
 use remote_server::manager::RemoteServerManager;
 use remote_server::proto::{
-    ClientMessage, DeleteFile, RenameAndSaveFile, ServerMessage, host_scoped_request,
+    ClientMessage, DeleteFile, RenameFile, ServerMessage, host_scoped_request,
 };
 use remote_server::protocol::RequestId;
 use warp_files::FileModel;
@@ -76,8 +76,7 @@ fn remote_move_moves_link_entry_not_referent() {
         std::os::unix::fs::symlink(&referent, &link).unwrap();
 
         move_file(&mut app, &server, &link, destination.clone());
-        remote_server::host_response::rename_and_save_file_result(&responses.recv().await.unwrap())
-            .unwrap();
+        remote_server::host_response::rename_file_result(&responses.recv().await.unwrap()).unwrap();
 
         assert!(fs::symlink_metadata(&link).is_err());
         assert_eq!(fs::read_link(&destination).unwrap(), referent);
@@ -97,10 +96,8 @@ fn remote_hard_link_collision_fails_before_writing() {
 
         move_file(&mut app, &server, &source, destination.clone());
         assert!(
-            remote_server::host_response::rename_and_save_file_result(
-                &responses.recv().await.unwrap()
-            )
-            .is_err()
+            remote_server::host_response::rename_file_result(&responses.recv().await.unwrap())
+                .is_err()
         );
         assert_eq!(fs::read_to_string(&source).unwrap(), "original\n");
         assert_eq!(fs::read_to_string(&destination).unwrap(), "original\n");
@@ -124,7 +121,7 @@ fn move_file(app: &mut App, server: &ModelHandle<ServerModel>, from: &Path, to: 
     dispatch(
         app,
         server,
-        host_scoped_request::Message::RenameAndSaveFile(RenameAndSaveFile {
+        host_scoped_request::Message::RenameFile(RenameFile {
             path: from.to_str().unwrap().to_owned(),
             new_path: to.to_str().unwrap().to_owned(),
             content: "updated\n".to_owned(),
@@ -144,8 +141,7 @@ fn remote_move_replaces_destination_and_preserves_source_permissions() {
         fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(&target, "replace me\n").unwrap();
         move_file(&mut app, &server, &source, target.clone());
-        remote_server::host_response::rename_and_save_file_result(&responses.recv().await.unwrap())
-            .unwrap();
+        remote_server::host_response::rename_file_result(&responses.recv().await.unwrap()).unwrap();
 
         assert!(!source.exists());
         assert_eq!(fs::read_to_string(&target).unwrap(), "updated\n");
@@ -166,9 +162,8 @@ fn remote_move_destination_setup_failure_leaves_source_unchanged() {
         fs::write(&source, "original\n").unwrap();
         fs::write(&blocker, "blocker").unwrap();
         move_file(&mut app, &server, &source, blocker.join("target.txt"));
-        let result = remote_server::host_response::rename_and_save_file_result(
-            &responses.recv().await.unwrap(),
-        );
+        let result =
+            remote_server::host_response::rename_file_result(&responses.recv().await.unwrap());
 
         assert!(result.is_err());
         assert_eq!(fs::read_to_string(&source).unwrap(), "original\n");
@@ -186,10 +181,9 @@ fn remote_move_native_rename_failure_reports_saved_source() {
         fs::write(&source, "original\n").unwrap();
         fs::create_dir(&target).unwrap();
         move_file(&mut app, &server, &source, target.clone());
-        let error = remote_server::host_response::rename_and_save_file_result(
-            &responses.recv().await.unwrap(),
-        )
-        .unwrap_err();
+        let error =
+            remote_server::host_response::rename_file_result(&responses.recv().await.unwrap())
+                .unwrap_err();
 
         assert!(error.to_string().contains("Saved content at"));
         assert_eq!(fs::read_to_string(&source).unwrap(), "updated\n");
@@ -204,8 +198,7 @@ fn remote_same_path_move_writes_without_deleting_source() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("source.txt");
         move_file(&mut app, &server, &source, source.clone());
-        remote_server::host_response::rename_and_save_file_result(&responses.recv().await.unwrap())
-            .unwrap();
+        remote_server::host_response::rename_file_result(&responses.recv().await.unwrap()).unwrap();
 
         assert_eq!(fs::read_to_string(&source).unwrap(), "updated\n");
     });

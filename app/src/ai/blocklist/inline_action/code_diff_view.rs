@@ -1048,41 +1048,46 @@ impl CodeDiffView {
             .pending_diffs
             .iter()
             .map(|diff| {
-                diff.diff_view
+                let file_name = diff
+                    .diff_view
+                    .as_ref(ctx)
+                    .file_name()
+                    .unwrap_or_else(|| "file".to_owned());
+                let restore = diff
+                    .diff_view
                     .update(ctx, |view, ctx| view.restore_and_save_diff(ctx))
                     .unwrap_or_else(|error| {
                         futures::future::ready(Err(Arc::new(FileSaveError::Other(error)))).boxed()
-                    })
+                    });
+                async move { (file_name, restore.await) }
             })
             .collect::<Vec<_>>();
         self.revert_in_progress = true;
         let (tx, rx) = oneshot::channel();
         let window_id = ctx.window_id();
         ctx.spawn(
-            async move {
-                join_all(restores)
-                    .await
-                    .into_iter()
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(|_| ())
-            },
-            move |me, result, ctx| {
+            async move { join_all(restores).await },
+            move |me, outcomes, ctx| {
                 me.revert_in_progress = false;
-                match &result {
-                    Ok(()) => {
-                        me.state = CodeDiffState::Reverted;
-                        me.mark_action_as_reverted(ctx);
-                    }
-                    Err(error) => {
+                let mut result = Ok(());
+                for (file_name, outcome) in outcomes {
+                    if let Err(error) = &outcome {
                         log::error!("Failed to revert file edits: {error}");
                         ToastStack::handle(ctx).update(ctx, |stack, ctx| {
                             stack.add_ephemeral_toast(
-                                DismissibleToast::error("Failed to revert file edits".to_owned()),
+                                DismissibleToast::error(format!(
+                                    "Failed to revert changes to {file_name}"
+                                )),
                                 window_id,
                                 ctx,
                             );
                         });
                     }
+                    result = result.and(outcome);
+                }
+                if result.is_ok() {
+                    me.state = CodeDiffState::Reverted;
+                    me.mark_action_as_reverted(ctx);
                 }
                 ctx.notify();
                 let _ = tx.send(result);

@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use ai::diff_validation::DiffDelta;
+use line_ending::LineEnding;
 use warp_core::ui::appearance::Appearance;
 use warp_editor::content::buffer::InitialBufferState;
 use warp_editor::render::element::VerticalExpansionBehavior;
@@ -52,6 +53,11 @@ fn add_diff(app: &mut App, path: &Path, base: &str, diff: DiffType) -> ViewHandl
                 ctx,
             );
             editor.reset(InitialBufferState::plain_text(base), ctx);
+            // Keep the fixture's LF content independent of the platform default for empty buffers.
+            let buffer = editor.model.as_ref(ctx).buffer().clone();
+            buffer.update(ctx, |buffer, _| {
+                buffer.set_line_ending_mode(LineEnding::LF);
+            });
             editor
         });
         let mut view = InlineDiffView::new(

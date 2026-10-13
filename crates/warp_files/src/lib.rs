@@ -60,7 +60,8 @@ pub enum FileModelEvent {
     },
 }
 
-/// Resolves with the outcome of one dispatched file operation.
+/// Resolves with the outcome of one dispatched file operation. For local operations, the sender is
+/// only dropped on app teardown, in which case the outcome is treated as success.
 pub type SaveFuture = BoxFuture<'static, Result<(), Arc<FileSaveError>>>;
 
 impl FileModelEvent {
@@ -142,6 +143,8 @@ impl FileBackend {
 #[derive(Default)]
 struct LocalFile {
     path: Option<PathBuf>,
+    /// Original registration path, kept separately from the canonical open/save path so deletes and
+    /// renames act on the requested directory entry rather than a symlink referent.
     entry_path: Option<PathBuf>,
     version: Option<ContentVersion>,
     /// How this file is being watched for changes.
@@ -844,7 +847,7 @@ impl FileModel {
             let new_path = new_path.to_string();
             let (tx, rx) = oneshot::channel();
             ctx.spawn(
-                async move { handle.rename_and_save_file(path, new_path, content).await },
+                async move { handle.rename_file(path, new_path, content).await },
                 move |me, result, ctx| {
                     let result = result
                         .map_err(|error| Arc::new(FileSaveError::RemoteError(error.to_string())));
@@ -864,94 +867,88 @@ impl FileModel {
                     let _ = tx.send(result);
                 },
             );
-            return Ok(async move {
+            Ok(async move {
                 rx.await.unwrap_or_else(|_| {
                     Err(Arc::new(FileSaveError::Other(
                         "Remote move completion was cancelled".to_owned(),
                     )))
                 })
             }
-            .boxed());
-        }
-        let file_path = self
-            .entry_path(file_id)
-            .ok_or(FileSaveError::NoFilePath(file_id))?;
-        if new_path == file_path {
-            return self.save(file_id, content, version, ctx);
-        }
+            .boxed())
+        } else {
+            let file_path = self
+                .entry_path(file_id)
+                .ok_or(FileSaveError::NoFilePath(file_id))?;
+            if new_path == file_path {
+                return self.save(file_id, content, version, ctx);
+            }
 
-        let (tx, rx) = oneshot::channel();
-        ctx.spawn(
-            async move {
-                // Make sure the file we're renaming exists.
-                if let Err(err) = async_fs::metadata(&file_path).await {
-                    return Err(FileSaveError::IOError {
-                        error: err,
-                        path: file_path,
-                    });
-                }
-
-                match same_file::is_same_file(&file_path, &new_path) {
-                    Ok(true) => {
-                        return Err(FileSaveError::Other(format!(
-                            "Cannot move {file_path:?} to {new_path:?}: both entries refer to the same file"
-                        )));
+            let (tx, rx) = oneshot::channel();
+            ctx.spawn(
+                async move {
+                    // Make sure the file we're renaming exists.
+                    if let Err(err) = async_fs::metadata(&file_path).await {
+                        return Err(FileSaveError::IOError {
+                            error: err,
+                            path: file_path,
+                        });
                     }
-                    Ok(false) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(FileSaveError::IOError { error, path: new_path }),
-                }
 
-                // Make sure the components of the path we're moving to exists.
-                if let Err(err) = Self::ensure_parent_directories(&new_path).await {
-                    return Err(FileSaveError::IOError {
-                        error: err,
-                        path: new_path,
-                    });
-                }
-
-                // Write the updated contents to the old path first.
-                async_fs::write(&file_path, content).await.map_err(|err| {
-                    FileSaveError::IOError {
-                        error: err,
-                        path: file_path.clone(),
+                    match same_file::is_same_file(&file_path, &new_path) {
+                        Ok(true) => {
+                            return Err(FileSaveError::Other(format!(
+                                "Cannot move {file_path:?} to {new_path:?}: both entries refer to the same file"
+                            )));
+                        }
+                        Ok(false) => {}
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(FileSaveError::IOError { error, path: new_path }),
                     }
-                })?;
 
-                // Now rename.
-                async_fs::rename(&file_path, &new_path)
-                    .await
-                    .map_err(|error| FileSaveError::Other(format!(
-                        "Saved content at {file_path:?}, but failed to rename to {new_path:?}: {error}"
-                    )))
-            },
-            move |me, write_result: Result<(), FileSaveError>, ctx| {
-                let result = write_result.map_err(Arc::new);
-                match &result {
-                    Ok(()) => {
-                        me.set_version(file_id, version);
-                        ctx.emit(FileModelEvent::FileSaved {
+                    // Make sure the components of the path we're moving to exists.
+                    if let Err(err) = Self::ensure_parent_directories(&new_path).await {
+                        return Err(FileSaveError::IOError {
+                            error: err,
+                            path: new_path,
+                        });
+                    }
+
+                    // Write the updated contents to the old path first.
+                    async_fs::write(&file_path, content).await.map_err(|err| {
+                        FileSaveError::IOError {
+                            error: err,
+                            path: file_path.clone(),
+                        }
+                    })?;
+
+                    // Now rename.
+                    async_fs::rename(&file_path, &new_path)
+                        .await
+                        .map_err(|error| FileSaveError::Other(format!(
+                            "Saved content at {file_path:?}, but failed to rename to {new_path:?}: {error}"
+                        )))
+                },
+                move |me, write_result: Result<(), FileSaveError>, ctx| {
+                    let result = write_result.map_err(Arc::new);
+                    match &result {
+                        Ok(()) => {
+                            me.set_version(file_id, version);
+                            ctx.emit(FileModelEvent::FileSaved {
+                                id: file_id,
+                                version,
+                            })
+                        }
+                        Err(err) => ctx.emit(FileModelEvent::FailedToSave {
                             id: file_id,
-                            version,
-                        })
-                    }
-                    Err(err) => ctx.emit(FileModelEvent::FailedToSave {
-                        id: file_id,
-                        error: err.clone(),
-                    }),
-                };
-                let _ = tx.send(result);
-            },
-        );
+                            error: err.clone(),
+                        }),
+                    };
+                    let _ = tx.send(result);
+                },
+            );
 
-        Ok(async move {
-            rx.await.unwrap_or_else(|_| {
-                Err(Arc::new(FileSaveError::Other(
-                    "Move completion was cancelled".to_owned(),
-                )))
-            })
+            Ok(async move { rx.await.unwrap_or(Ok(())) }.boxed())
         }
-        .boxed())
     }
 
     /// Deletes the specified file, returning a future that resolves with the

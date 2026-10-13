@@ -51,8 +51,8 @@ use super::proto::{
     GitOpError, GitPushRequest, GitPushResponse, GitStatusPush, HomeSkillMetadata, IndexCodebase,
     Initialize, InitializeResponse, MissingFragmentMetadata, NavigatedToDirectory,
     NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileContextResponse,
-    RemoteAgentContextSnapshot, RemoteContextFileProto, RemoteSkillProto, RenameAndSaveFile,
-    RenameAndSaveFileResponse, RenameAndSaveFileSuccess, ResolveConflict, ResolveConflictResponse,
+    RemoteAgentContextSnapshot, RemoteContextFileProto, RemoteSkillProto, RenameFile,
+    RenameFileResponse, RenameFileSuccess, ResolveConflict, ResolveConflictResponse,
     ResolveConflictSuccess, ResyncCodebase, RipgrepSearchRequest, RunCommandError,
     RunCommandErrorCode, RunCommandRequest, RunCommandResponse, RunCommandSuccess, SaveBuffer,
     SaveBufferResponse, SaveBufferSuccess, ServerMessage, SessionBootstrapped, TextEdit,
@@ -61,9 +61,8 @@ use super::proto::{
     discard_files_response, get_diff_state_response, get_fragment_metadata_from_hash_response,
     git_commit_chain_response, git_create_pr_response, git_generate_commit_message_response,
     git_get_committed_branch_files_response, git_push_response, host_scoped_request, notification,
-    remote_skill_proto, rename_and_save_file_response, resolve_conflict_response,
-    run_command_response, save_buffer_response, server_message, session_scoped_request,
-    write_file_response,
+    remote_skill_proto, rename_file_response, resolve_conflict_response, run_command_response,
+    save_buffer_response, server_message, session_scoped_request, write_file_response,
 };
 use super::server_buffer_tracker::{PendingBufferRequestKind, ServerBufferTracker};
 use super::{diff_state_proto, ripgrep_search};
@@ -394,24 +393,18 @@ impl ServerModel {
                         })
                     }
                     (FileModelEvent::FileSaved { .. }, FileOpKind::Rename) => {
-                        server_message::Message::RenameAndSaveFileResponse(
-                            RenameAndSaveFileResponse {
-                                result: Some(rename_and_save_file_response::Result::Success(
-                                    RenameAndSaveFileSuccess {},
-                                )),
-                            },
-                        )
+                        server_message::Message::RenameFileResponse(RenameFileResponse {
+                            result: Some(rename_file_response::Result::Success(
+                                RenameFileSuccess {},
+                            )),
+                        })
                     }
                     (FileModelEvent::FailedToSave { error, .. }, FileOpKind::Rename) => {
-                        server_message::Message::RenameAndSaveFileResponse(
-                            RenameAndSaveFileResponse {
-                                result: Some(rename_and_save_file_response::Result::Error(
-                                    FileOperationError {
-                                        message: format!("{error}"),
-                                    },
-                                )),
-                            },
-                        )
+                        server_message::Message::RenameFileResponse(RenameFileResponse {
+                            result: Some(rename_file_response::Result::Error(FileOperationError {
+                                message: format!("{error}"),
+                            })),
+                        })
                     }
                     (FileModelEvent::FailedToSave { error, .. }, FileOpKind::Write) => {
                         server_message::Message::WriteFileResponse(WriteFileResponse {
@@ -926,8 +919,8 @@ impl ServerModel {
                     Some(host_scoped_request::Message::DeleteFile(m)) => {
                         self.handle_delete_file(m, &request_id, conn_id, ctx)
                     }
-                    Some(host_scoped_request::Message::RenameAndSaveFile(m)) => {
-                        self.handle_rename_and_save_file(m, &request_id, conn_id, ctx)
+                    Some(host_scoped_request::Message::RenameFile(m)) => {
+                        self.handle_rename_file(m, &request_id, conn_id, ctx)
                     }
                     Some(host_scoped_request::Message::ReadFileContext(m)) => {
                         self.handle_read_file_context(m, &request_id, conn_id, ctx)
@@ -2333,9 +2326,9 @@ impl ServerModel {
         HandlerOutcome::Async(None)
     }
 
-    fn handle_rename_and_save_file(
+    fn handle_rename_file(
         &mut self,
-        msg: RenameAndSaveFile,
+        msg: RenameFile,
         request_id: &RequestId,
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
@@ -2358,13 +2351,11 @@ impl ServerModel {
             )
         }) {
             self.pending_file_ops.remove(file_id, ctx);
-            return HandlerOutcome::Sync(server_message::Message::RenameAndSaveFileResponse(
-                RenameAndSaveFileResponse {
-                    result: Some(rename_and_save_file_response::Result::Error(
-                        FileOperationError {
-                            message: format!("Failed to initiate rename: {error}"),
-                        },
-                    )),
+            return HandlerOutcome::Sync(server_message::Message::RenameFileResponse(
+                RenameFileResponse {
+                    result: Some(rename_file_response::Result::Error(FileOperationError {
+                        message: format!("Failed to initiate rename: {error}"),
+                    })),
                 },
             ));
         }
