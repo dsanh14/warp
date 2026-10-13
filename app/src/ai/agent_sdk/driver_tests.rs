@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -2497,29 +2499,59 @@ fn ambient_driver_resumed_conversation_elapsed_idle_window_commits_exiting() {
 
 #[test]
 fn deferred_skill_publication_uses_inventory_after_workspace_consumption() {
-    if std::env::var_os("WARP_TEST_DEFERRED_SKILL_PUBLICATION").is_none() {
-        let home = TempDir::new().unwrap();
-        let output = ProcessCommand::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "ai::agent_sdk::driver::tests::deferred_skill_publication_uses_inventory_after_workspace_consumption",
-                "--nocapture",
-            ])
-            .env("WARP_TEST_DEFERRED_SKILL_PUBLICATION", "1")
-            .env("HOME", home.path())
-            .env("USERPROFILE", home.path())
-            .env("CLAUDE_CONFIG_DIR", home.path().join(".claude"))
-            .env("CODEX_HOME", home.path().join(".codex"))
-            .output()
+    let selected_harness = std::env::var("WARP_TEST_DEFERRED_SKILL_PUBLICATION");
+    if selected_harness.is_err() {
+        for harness in [Harness::Claude, Harness::Codex, Harness::Gemini] {
+            let home = TempDir::new().unwrap();
+            let sidecar = home.path().join("sidecar");
+            let bin = sidecar.join("usr/local/bin");
+            fs::create_dir_all(&bin).unwrap();
+            let program = if cfg!(windows) {
+                "adapter.exe"
+            } else {
+                "adapter"
+            };
+            let executable = bin.join(program);
+            fs::write(&executable, "").unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::write(
+                sidecar.join("warp-harness.json"),
+                json!({
+                    "schema_version": 1,
+                    "harness": harness.to_string(),
+                    "acp": {"program": program, "args": []},
+                })
+                .to_string(),
+            )
             .unwrap();
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
+            let mut command = ProcessCommand::new(std::env::current_exe().unwrap());
+            #[cfg(windows)]
+            command.creation_flags(0);
+            let output = command
+                .args([
+                    "--exact",
+                    "ai::agent_sdk::driver::tests::deferred_skill_publication_uses_inventory_after_workspace_consumption",
+                    "--nocapture",
+                ])
+                .env("WARP_TEST_DEFERRED_SKILL_PUBLICATION", harness.to_string())
+                .env("WARP_HARNESS_SIDECAR", sidecar)
+                .env("HOME", home.path())
+                .env("USERPROFILE", home.path())
+                .env("CLAUDE_CONFIG_DIR", home.path().join(".claude"))
+                .env("CODEX_HOME", home.path().join(".codex"))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
         return;
     }
+    let selected_harness = selected_harness.unwrap();
     let _factory_mcp = warp_core::features::FeatureFlag::FactoryMcp.override_enabled(false);
     for transport in [HarnessTransport::Pty, HarnessTransport::Acp] {
         for (use_factory_repositories, has_deferred_repositories) in
@@ -2530,6 +2562,9 @@ fn deferred_skill_publication_uses_inventory_after_workspace_consumption() {
                 (Harness::Codex, ".agents"),
                 (Harness::Gemini, ".gemini"),
             ] {
+                if harness.to_string() != selected_harness {
+                    continue;
+                }
                 App::test((), |mut app| async move {
                     let _capability = warp_core::features::FeatureFlag::FactoryDeferredRepositories
                         .override_enabled(!use_factory_repositories);
