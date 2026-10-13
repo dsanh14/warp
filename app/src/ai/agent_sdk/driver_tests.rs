@@ -2565,7 +2565,8 @@ fn deferred_skill_publication_uses_inventory_after_workspace_consumption() {
                         );
                     }
                     let harness = harness_kind(harness, transport).unwrap();
-                    let driver = app.add_model(|ctx| AgentDriver::new(options, &harness, ctx).unwrap());
+                    let driver =
+                        app.add_model(|ctx| AgentDriver::new(options, &harness, ctx).unwrap());
                     let foreground = driver.update(&mut app, |driver, ctx| {
                         assert!(driver.workspace.take().unwrap().source_repos.is_empty());
                         assert_eq!(driver.has_deferred_repositories, should_activate);
