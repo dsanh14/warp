@@ -59,9 +59,27 @@ pub mod headers {
 /// list of `Name:Value` pairs, where each pair is split on the first colon.
 const EXTRA_HTTP_HEADERS_ENV_VAR: &str = "WARP_EXTRA_HTTP_HEADERS";
 
+/// Native HTTP transport configuration.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Default)]
+pub struct ClientOptions {
+    pub https_only: bool,
+    pub pool_idle_timeout: Option<Duration>,
+    pub connect_timeout: Option<Duration>,
+    pub pool_max_idle_per_host: Option<usize>,
+    pub disable_tls_certificates: bool,
+    pub no_proxy: bool,
+}
+
 /// A wrapper around a `reqwest::Client` to execute requests. Returns a custom `RequestBuilder` type
 /// that ensures any call to the underlying `reqwest::Client` are properly adapted so that they can
 /// run outside of a Tokio context.
+///
+/// Client-wide headers and cookie stores are not configurable.
+///
+/// ```compile_fail
+/// let _ = http_client::Client::from_client_builder(reqwest::Client::builder());
+/// ```
 pub struct Client {
     wrapped: reqwest::Client,
 
@@ -167,7 +185,29 @@ impl Client {
         Self::from_client_builder(client_builder).expect("should not fail to create client")
     }
 
-    pub fn from_client_builder(client_builder: reqwest::ClientBuilder) -> reqwest::Result<Self> {
+    /// Creates a client with explicit transport settings.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn new_with_options(options: ClientOptions) -> reqwest::Result<Self> {
+        let mut builder = reqwest::Client::builder().https_only(options.https_only);
+        if let Some(timeout) = options.pool_idle_timeout {
+            builder = builder.pool_idle_timeout(timeout);
+        }
+        if let Some(timeout) = options.connect_timeout {
+            builder = builder.connect_timeout(timeout);
+        }
+        if let Some(max_idle) = options.pool_max_idle_per_host {
+            builder = builder.pool_max_idle_per_host(max_idle);
+        }
+        if options.disable_tls_certificates {
+            builder = builder.tls_certs_only([]);
+        }
+        if options.no_proxy {
+            builder = builder.no_proxy();
+        }
+        Self::from_client_builder(builder)
+    }
+
+    fn from_client_builder(client_builder: reqwest::ClientBuilder) -> reqwest::Result<Self> {
         client_builder.build().map(|client| Self {
             wrapped: client,
             before_request_sent: None,
