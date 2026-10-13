@@ -111,7 +111,7 @@ fn driver_keeps_uninterpreted_factory_experiments() {
             .unwrap();
         let mut options = crate::ai::agent_sdk::tests::agent_driver_options();
         options.experimental = Some(experimental.clone());
-        let driver = app.add_model(|ctx| AgentDriver::new(options, ctx).unwrap());
+        let driver = app.add_model(|ctx| AgentDriver::new(options, &HarnessKind::Oz, ctx).unwrap());
         driver.read(&app, |driver, _| {
             assert_eq!(driver.experimental, Some(experimental));
         });
@@ -2564,7 +2564,8 @@ fn deferred_skill_publication_uses_inventory_after_workspace_consumption() {
                             ManagedSecretValue::raw_value("1"),
                         );
                     }
-                    let driver = app.add_model(|ctx| AgentDriver::new(options, ctx).unwrap());
+                    let harness = harness_kind(harness, transport).unwrap();
+                    let driver = app.add_model(|ctx| AgentDriver::new(options, &harness, ctx).unwrap());
                     let foreground = driver.update(&mut app, |driver, ctx| {
                         assert!(driver.workspace.take().unwrap().source_repos.is_empty());
                         assert_eq!(driver.has_deferred_repositories, should_activate);
@@ -2576,9 +2577,7 @@ fn deferred_skill_publication_uses_inventory_after_workspace_consumption() {
                         );
                         ctx.spawner()
                     });
-                    let HarnessKind::ThirdParty(harness) =
-                        harness_kind(harness, transport).unwrap()
-                    else {
+                    let HarnessKind::ThirdParty(harness) = harness else {
                         panic!("expected a third-party harness");
                     };
                     let result = AgentDriver::prepare_harness(

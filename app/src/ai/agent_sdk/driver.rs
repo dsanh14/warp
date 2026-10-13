@@ -1150,6 +1150,7 @@ impl AgentDriver {
     ))]
     pub fn new(
         options: AgentDriverOptions,
+        harness: &HarnessKind,
         ctx: &mut ModelContext<Self>,
     ) -> Result<Self, AgentDriverError> {
         let AgentDriverOptions {
@@ -1215,7 +1216,8 @@ impl AgentDriver {
                     _ => None,
                 });
 
-        let mut env_vars = build_secret_env_vars(&secrets)?;
+        let mut env_vars = harness.env_defaults();
+        env_vars.extend(build_secret_env_vars(&secrets)?);
 
         // Inject cloud provider env vars.
         cloud_provider::collect_env_vars(&cloud_providers, &mut env_vars)?;
@@ -1232,6 +1234,7 @@ impl AgentDriver {
                 selected_harness,
                 harness_transport,
                 third_party_harness_model_config.as_ref(),
+                &env_vars,
             )
             .map_err(|error| AgentDriverError::HarnessConfigSetupFailed {
                 harness: selected_harness.to_string(),
@@ -2662,12 +2665,14 @@ impl AgentDriver {
                         Ok::<_, AgentDriverError>((harness_exit_rx, runner))
                     })
                     .await?;
-                let runtime_error_patterns = harness.runtime_error_patterns();
+                let runtime_error_patterns = harness.runtime_error_patterns_for_run();
+                let runtime_error_patterns: Vec<&str> =
+                    runtime_error_patterns.iter().map(String::as_str).collect();
 
                 with_credential_refreshes(
                     Self::run_harness(
                         runner,
-                        runtime_error_patterns,
+                        &runtime_error_patterns,
                         &foreground,
                         harness_exit_rx,
                         &setup_events,
@@ -3401,7 +3406,7 @@ impl AgentDriver {
     /// same `AuthenticationRequired` error code used by the auth preflight.
     async fn run_harness(
         runner: Arc<dyn harness::HarnessRunner>,
-        runtime_error_patterns: &'static [&'static str],
+        runtime_error_patterns: &[&str],
         foreground: &ModelSpawner<Self>,
         harness_exit_rx: oneshot::Receiver<()>,
         setup_events: &SetupClientEventReporter,
