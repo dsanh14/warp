@@ -251,8 +251,7 @@ impl IdleWait for RealIdleWait {
     }
 }
 
-/// IdleTimeoutSender is wrapper around a sender that signals when a run is done after
-/// an idle timeout. Used for both Oz runs and third-party harnesses.
+/// Sends one exit signal for run idle timeouts or standby expiry.
 ///
 /// We use a generation-based approach to cancel timers instead of storing timer handles:
 ///
@@ -295,6 +294,7 @@ impl<T: Send + 'static> Clone for IdleTimeoutSender<T> {
 }
 
 impl<T: Send + 'static> IdleTimeoutSender<T> {
+    /// Creates a shared, single-use exit signal without starting a timer.
     pub(crate) fn new(tx: oneshot::Sender<T>) -> Self {
         Self {
             tx_cell: Arc::new(Mutex::new(Some(tx))),
@@ -635,13 +635,14 @@ pub enum ResumeOptions {
     ThirdParty(Box<ResumePayload>),
 }
 
-/// Options for initializing the agent driver.
+/// Configures the terminal and resources for a normal run or task-free standby preparation.
 #[derive(Default)]
 pub struct AgentDriverOptions {
     /// Initial working directory for the agent's terminal session.
     pub working_dir: PathBuf,
     /// Secrets to inject into the agent's terminal session.
     pub secrets: HashMap<String, ManagedSecretValue>,
+    /// Supplies terminal variables that override secrets but precede provider and run variables.
     pub environment_variables: HashMap<String, String>,
     /// ID of the task being executed.
     pub task_id: Option<AmbientAgentTaskId>,
@@ -695,7 +696,7 @@ pub struct AgentDriverOptions {
     pub mcp_startup_timeout: Option<Duration>,
 }
 
-/// Prepares and executes agent workloads in a headless terminal.
+/// Owns a headless terminal for agent runs or standby resource preparation.
 pub struct AgentDriver {
     terminal_driver: ModelHandle<terminal::TerminalDriver>,
     /// Root directory for workspace-wide environment and snapshot operations.
@@ -1127,6 +1128,7 @@ impl From<PrepareEnvironmentError> for AgentDriverError {
 }
 
 impl AgentDriver {
+    /// Creates the driver and terminal without running workspace setup or submitting a prompt.
     #[tracing::instrument(name = "AgentDriver::create", skip_all, err, fields(
         tags.cloud_agent = true,
         task_id = ?options.task_id,

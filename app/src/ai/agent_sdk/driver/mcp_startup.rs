@@ -1,6 +1,4 @@
-//! MCP server startup for an agent run: resolving `--mcp` specs into installations, spawning
-//! them, and bounding how long the first turn waits on file-based servers discovered during
-//! setup.
+//! Shared MCP startup for normal runs and standby preparation, with bounded readiness waits.
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::mem;
@@ -42,6 +40,7 @@ use crate::server::server_api::ServerApiProvider;
 use crate::server::server_api::ai::TaskStatusUpdate;
 use crate::server::server_api::managed_mcp::ManagedMcpClient;
 
+/// Default readiness timeout when driver options do not supply an override.
 pub(crate) const MCP_SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 /// Attempt budget for resolving one managed MCP server's client config
 /// (`ManagedMcpClient::create_managed_mcp_client_config`) in
@@ -106,6 +105,7 @@ fn log_unresolved_secret_refs(
     );
 }
 
+/// Separates existing MCP installations from temporary installations that setup must create.
 #[derive(Debug, Default)]
 struct ResolvedMcpSpecs {
     local_uuids: Vec<Uuid>,
@@ -236,9 +236,12 @@ async fn builtin_mcp_ambient_headers(
         })
 }
 
+/// Controls whether MCP startup may attach servers that keep run-specific credentials.
 #[derive(Clone, Copy)]
 pub(crate) enum McpStartupMode {
+    /// Skips built-in servers because their transports keep credentials until shutdown.
     Standby,
+    /// Allows built-in servers even if local task creation failed.
     Run,
 }
 
@@ -247,8 +250,6 @@ pub(crate) enum McpStartupMode {
 /// Interactive clients attach built-ins via `TemplatableMCPServerManager::sync_builtin_servers`,
 /// which skips CLI agent runs, so setup injects the same code-owned installations here, scoped to
 /// this host.
-///
-/// Standbys defer built-ins because their transports pin credentials until server shutdown.
 async fn attach_builtin_mcp_servers(
     mode: McpStartupMode,
     task_id: Option<AmbientAgentTaskId>,
@@ -313,8 +314,7 @@ async fn attach_builtin_mcp_servers(
     Ok(())
 }
 
-/// Starts the MCP servers requested for the run and profile in one launch, then waits for
-/// all of them through one manager subscription.
+/// Starts configured and profile-allowed MCP servers together, with the mode controlling built-ins.
 pub(crate) async fn start_task_and_profile_mcp_servers(
     mcp_specs: &[MCPSpec],
     managed_mcp_client: Arc<dyn ManagedMcpClient>,
@@ -369,6 +369,7 @@ pub(crate) async fn start_task_and_profile_mcp_servers(
         .await
 }
 
+/// Uses one readiness subscription for all selected servers so waits cannot cancel each other.
 fn start_mcp_servers_concurrently(
     me: &AgentDriver,
     task_uuids: Vec<Uuid>,
@@ -433,6 +434,7 @@ fn start_mcp_servers_concurrently(
     })
 }
 
+/// Selects installed servers that need startup and rejects unknown installation IDs.
 fn get_mcp_servers_to_start(
     uuids: &[Uuid],
     ctx: &mut ModelContext<AgentDriver>,
@@ -467,8 +469,7 @@ fn get_mcp_servers_to_start(
 /// timeout.
 ///
 /// Returns [`AgentDriverError::MCPStartupFailed`] naming the servers that failed to start
-/// or were still starting at the deadline. Callers decide whether that is fatal (see strict
-/// MCP startup handling in `run_internal`).
+/// or were still starting at the deadline, leaving the caller to apply its strict startup policy.
 ///
 /// Must be called before the servers are spawned so no state changes are missed. See
 /// [`await_model_event`] for why waits on the manager must not overlap.
@@ -1118,8 +1119,7 @@ impl AgentDriver {
     /// completion) must pass only what is left of it, so the combined phases stay within one
     /// bounded window instead of compounding into multiple full timeouts.
     ///
-    /// See [`await_model_event`] for why this must never run concurrently with
-    /// [`Self::start_mcp_servers`] or [`Self::start_ephemeral_mcp_servers`].
+    /// See [`await_model_event`] for why waits on the same manager must not overlap.
     fn wait_for_file_based_mcps_running(
         &self,
         uuids: Vec<Uuid>,

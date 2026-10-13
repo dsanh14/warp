@@ -10,6 +10,7 @@ use warpui::r#async::executor::Background;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::server::server_api::ai::{AIClient, AgentRunClientEventRequest};
 
+/// Records setup spans and sends best-effort server events only when a run ID exists.
 #[derive(Clone)]
 pub(crate) struct SetupClientEventReporter {
     run_id: Option<AmbientAgentTaskId>,
@@ -31,7 +32,7 @@ impl SetupClientEventReporter {
         }
     }
 
-    /// Constructs a reporter for setup paths that are intentionally not backed by an Oz run.
+    /// Disables run events without disabling setup tracing spans.
     pub(crate) fn noop(ai_client: Arc<dyn AIClient>, background: Arc<Background>) -> Self {
         Self {
             run_id: None,
@@ -40,6 +41,7 @@ impl SetupClientEventReporter {
         }
     }
 
+    /// Records a setup step's duration and error state without changing its result.
     pub(crate) async fn record_result<T, E: std::error::Error>(
         &self,
         step: SetupStep,
@@ -67,6 +69,7 @@ impl SetupClientEventReporter {
         result
     }
 
+    /// Records a setup step's duration without interpreting its return value as an error.
     pub(crate) async fn record_value<T>(
         &self,
         step: SetupStep,
@@ -86,6 +89,7 @@ impl SetupClientEventReporter {
         );
         value
     }
+    /// Records setup work in the background without making startup wait for it.
     pub(crate) fn record_value_detached<T>(
         &self,
         step: SetupStep,
@@ -111,6 +115,7 @@ impl SetupClientEventReporter {
             .detach();
     }
 
+    /// Reports a run milestone without making delivery failures fatal.
     pub(crate) async fn post_timeline_event(&self, event: OzRunTimelineEvent) {
         let Some(run_id) = self.run_id else {
             return;
@@ -163,6 +168,7 @@ impl SetupClientEventReporter {
     }
 }
 
+/// Names run milestones that have a timestamp rather than a setup duration.
 #[derive(Clone, Copy)]
 pub(crate) enum OzRunTimelineEvent {
     AgentStarted,
@@ -178,11 +184,7 @@ impl OzRunTimelineEvent {
     }
 }
 
-/// Whether a [`SetupStep`] can run before a task exists.
-///
-/// A pre-warmed sandbox prepares itself with only an agent-scoped API key, so it can run
-/// every [`SetupScope::Agent`] step. [`SetupScope::Run`] steps need a task, execution,
-/// conversation, requester, or prompt, and wait until the sandbox is claimed.
+/// Classifies setup requirements without controlling which steps standby preparation executes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SetupScope {
     /// Inputs are limited to team, agent service account, agent config snapshot,
@@ -192,14 +194,13 @@ pub(crate) enum SetupScope {
     Run,
 }
 
+/// Names setup operations so normal runs and standby preparation use the same tracing labels.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Sequence)]
 pub(crate) enum SetupStep {
     TeamMetadataRefresh,
     WarpDriveSync,
     TaskDataFetch,
-    /// Applying the credentials and secrets a pre-warmed sandbox received from its
-    /// standby configuration. The agent-scoped counterpart to [`SetupStep::TaskDataFetch`],
-    /// which reaches the same end state through task-keyed APIs.
+    /// Applies standby credentials without the task-keyed APIs of `TaskDataFetch`.
     AgentCredentialsFetch,
     EnvironmentResolution,
     SkillRepoClone,
@@ -239,11 +240,7 @@ macro_rules! span_and_name {
 }
 
 impl SetupStep {
-    /// Whether this step can run before a task exists.
-    ///
-    /// Matched exhaustively on purpose: a new setup step must declare its scope rather than
-    /// defaulting into the pre-warmed path, where running run-scoped work would fail against
-    /// a sandbox that has no task.
+    /// Declares each step's setup scope with no default for new steps.
     pub(crate) fn scope(self) -> SetupScope {
         match self {
             Self::TeamMetadataRefresh

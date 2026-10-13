@@ -446,6 +446,7 @@ enum AuthInitialization {
 }
 
 impl LaunchMode {
+    /// Sets command-line launch flags so standby uses sandbox initialization without a run prompt.
     fn command_line(command: CliCommand, global_options: GlobalOptions, debug: bool) -> Self {
         let (is_sandboxed, computer_use_override) = match &command {
             CliCommand::Agent(AgentCommand::Run(args)) => {

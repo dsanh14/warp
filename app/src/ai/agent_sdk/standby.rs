@@ -50,15 +50,14 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(SERVER_HEARTBEAT_TOLERA
 /// than being killed mid-request when the Namespace instance deadline lands.
 const EXPIRY_MARGIN: Duration = Duration::from_secs(15);
 
-/// What a prepared sandbox hands to whatever claims it.
-///
-/// `harness_working_dir` cannot be recomputed from the configuration alone, because it depends on
-/// how many repositories were materialized.
+/// Keeps the results of standby preparation for a future run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreparedSandbox {
+    /// Identifies the configuration that preparation completed.
     pub generation: String,
+    /// Records the actual harness directory, which depends on the number of cloned repositories.
     pub harness_working_dir: PathBuf,
-    /// Repositories preparation deliberately left unmaterialized.
+    /// Lists repositories for later on-demand checkout without cloning them during preparation.
     pub deferred_repositories: Vec<SourceRepo>,
 }
 
@@ -69,6 +68,7 @@ enum StandbyExit {
     Expired,
 }
 
+/// Starts the standby lifecycle and exits the app after expiry or a fatal error.
 pub(super) fn run(ctx: &mut AppContext, args: RunCloudStandbyArgs) -> anyhow::Result<()> {
     let runner = ctx.add_singleton_model(|_| AgentDriverRunner);
     runner.update(ctx, move |_, ctx| {
@@ -84,6 +84,7 @@ pub(super) fn run(ctx: &mut AppContext, args: RunCloudStandbyArgs) -> anyhow::Re
     Ok(())
 }
 
+/// Fetches one configuration and keeps its sandbox alive through preparation and the idle wait.
 // TODO(REMOTE-3488): Enable sandbox-scoped OTLP export for standby preparation spans.
 #[tracing::instrument(name = "standby::prepare_and_wait", skip_all, err, fields(tags.cloud_agent = true))]
 async fn prepare_and_wait(
@@ -160,6 +161,7 @@ async fn report_preparation_outcome(
     Err(anyhow::Error::new(error).context("Pre-warmed sandbox preparation failed"))
 }
 
+/// Keeps heartbeats active during preparation and status reporting, with expiry taking priority.
 async fn maintain_sandbox(
     api: &dyn PrewarmedSandboxClient,
     sandbox_id: &str,
@@ -212,7 +214,7 @@ fn wait_window(expires_at: DateTime<Utc>, now: DateTime<Utc>) -> Duration {
         .saturating_sub(EXPIRY_MARGIN)
 }
 
-/// Runs every agent-scope setup step this client supports, and returns the handoff record.
+/// Prepares an Oz sandbox through the shared driver without a prompt or run-only setup.
 async fn prepare(
     foreground: &ModelSpawner<AgentDriverRunner>,
     config: PrewarmedSandboxConfiguration,
@@ -343,6 +345,7 @@ async fn prepare(
     })
 }
 
+/// Installs the standby configuration's Git credentials before any repository or skill clone.
 fn apply_git_credentials(credentials: &[GitCredential]) -> Result<(), AgentDriverError> {
     if credentials.is_empty() {
         return Ok(());
@@ -358,7 +361,7 @@ fn apply_git_credentials(credentials: &[GitCredential]) -> Result<(), AgentDrive
     })
 }
 
-/// The directory repositories are materialized under.
+/// Uses the allocator's workspace root, or the process directory if no root was supplied.
 fn workspace_root() -> anyhow::Result<PathBuf> {
     match std::env::var_os(WORKSPACE_ROOT_ENV) {
         Some(root) if !root.is_empty() => Ok(PathBuf::from(root)),

@@ -25,24 +25,24 @@ use super::ai::GitCredential;
 use super::repository::ResolvedRepository;
 use crate::ChannelState;
 
+/// Carries the Namespace instance identity in addition to the normal bearer credential.
 pub const PREWARMED_SANDBOX_WORKLOAD_TOKEN_HEADER: &str = "X-Warp-Prewarmed-Sandbox-Workload-Token";
+/// Bounds each complete request, including credential lookup and response decoding.
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The agent-scoped subset of an execution configuration that a standby can act on without a
-/// task. Mirrors `types.PrewarmedSandboxPreparation` in warp-server.
+/// Matches the server's `PrewarmedSandboxPreparation` contract for setup that does not need a task.
 #[derive(Clone, Deserialize)]
 pub struct PrewarmedSandboxPreparation {
     pub harness: String,
+    /// Defines the repository checkouts that preparation must create.
     #[serde(default)]
     pub repositories: Vec<ResolvedRepository>,
-    /// Repositories the agent clones on demand. Preparation retains the inventory without
-    /// materializing them.
+    /// Keeps repositories for later on-demand clones without cloning them during setup.
     #[serde(default)]
     pub deferred_repositories: Vec<SourceRepo>,
     #[serde(default)]
     pub setup_commands: Vec<String>,
-    /// Raw `mcp_servers` map, in the same shape an agent config file uses, so it can go
-    /// through the shared MCP spec validation rather than a second parser.
+    /// Uses the agent config file format so normal runs and standby share MCP validation.
     #[serde(default)]
     pub mcp_servers: serde_json::Map<String, serde_json::Value>,
     #[serde(default)]
@@ -53,6 +53,7 @@ pub struct PrewarmedSandboxPreparation {
     pub computer_use_enabled: bool,
 }
 
+// Debug output omits values because setup commands and MCP settings can contain secrets.
 impl fmt::Debug for PrewarmedSandboxPreparation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PrewarmedSandboxPreparation")
@@ -71,20 +72,22 @@ impl fmt::Debug for PrewarmedSandboxPreparation {
     }
 }
 
-/// Everything a standby sandbox needs to prepare itself.
-///
-/// Carries ephemeral credentials in `git_credentials` and `managed_secrets`; neither may be
-/// logged or persisted.
+/// Supplies a standby configuration whose secrets must stay out of logs and saved app state.
 #[derive(Clone, Deserialize)]
 pub struct PrewarmedSandboxConfiguration {
+    /// Identifies the configuration version that status reports and heartbeats must match.
     pub generation: String,
     pub preparation: PrewarmedSandboxPreparation,
+    /// Supplies terminal variables that can include authenticated Factory clone URLs.
     #[serde(default)]
     pub environment_variables: HashMap<String, String>,
+    /// Supplies temporary credentials for the sandbox's Git credential files.
     #[serde(default)]
     pub git_credentials: Vec<GitCredential>,
+    /// Supplies secret values for the terminal environment and MCP configuration.
     #[serde(default)]
     pub managed_secrets: HashMap<String, String>,
+    /// Sets the server deadline that the standby process must exit before.
     pub expires_at: DateTime<Utc>,
 }
 
@@ -104,7 +107,7 @@ impl fmt::Debug for PrewarmedSandboxConfiguration {
     }
 }
 
-/// The preparation outcome a standby reports. The server accepts no other states.
+/// Restricts standby status reports to the two preparation outcomes the server accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrewarmedSandboxState {
     Ready,
@@ -120,14 +123,17 @@ impl PrewarmedSandboxState {
     }
 }
 
+/// Reports a preparation outcome for a specific configuration generation.
 #[derive(Debug, Serialize)]
 struct PrewarmedSandboxStatusInput {
     generation: String,
     state: &'static str,
+    /// Must match the generation for a ready report.
     #[serde(skip_serializing_if = "Option::is_none")]
     manifest_hash: Option<String>,
 }
 
+/// Confirms that a sandbox is still alive with the expected configuration generation.
 #[derive(Debug, Serialize)]
 struct PrewarmedSandboxHeartbeatInput {
     generation: String,
@@ -140,8 +146,7 @@ pub trait PrewarmedSandboxClient: 'static + Send + Sync {
     /// Fetches this sandbox's preparation plan and credentials.
     async fn fetch_configuration(&self, sandbox_id: &str) -> Result<PrewarmedSandboxConfiguration>;
 
-    /// Reports the terminal preparation outcome. `manifest_hash` must equal the generation
-    /// for a ready report; the server rejects any other value.
+    /// Reports whether preparation succeeded for the supplied configuration generation.
     async fn report_status(
         &self,
         sandbox_id: &str,
@@ -149,7 +154,7 @@ pub trait PrewarmedSandboxClient: 'static + Send + Sync {
         state: PrewarmedSandboxState,
     ) -> Result<()>;
 
-    /// Keeps the sandbox out of the reconciler's unhealthy set.
+    /// Keeps the sandbox healthy during preparation and the idle wait.
     async fn heartbeat(&self, sandbox_id: &str, generation: &str) -> Result<()>;
 }
 
@@ -223,7 +228,6 @@ impl PrewarmedSandboxClient for ServerApi {
             let body = PrewarmedSandboxStatusInput {
                 generation: generation.to_string(),
                 state: state.as_wire_value(),
-                // The server accepts a ready report only when its hash matches the generation.
                 manifest_hash: matches!(state, PrewarmedSandboxState::Ready)
                     .then(|| generation.to_string()),
             };
@@ -262,6 +266,7 @@ impl PrewarmedSandboxClient for ServerApi {
     }
 }
 
+/// Stops the entire request at its deadline so a stalled phase cannot block later heartbeats.
 async fn bounded_request<T>(
     timeout: Duration,
     request: impl Future<Output = Result<T>>,

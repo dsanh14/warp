@@ -1616,6 +1616,7 @@ impl ServerApiProvider {
         self.server_api.clone()
     }
 
+    /// Returns the standby API client with the app's shared authentication state.
     #[cfg_attr(target_family = "wasm", expect(dead_code))]
     pub fn get_prewarmed_sandbox_client(
         &self,

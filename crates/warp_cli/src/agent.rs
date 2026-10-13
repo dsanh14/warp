@@ -467,6 +467,7 @@ impl AgentCommand {
     }
 }
 
+/// Identifies the allocated sandbox to prepare without starting an agent task.
 #[derive(Debug, Clone, Args)]
 pub struct RunCloudStandbyArgs {
     /// UID of the pre-warmed sandbox row this container was allocated for.

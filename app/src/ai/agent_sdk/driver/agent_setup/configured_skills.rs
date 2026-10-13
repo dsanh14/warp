@@ -1,3 +1,5 @@
+//! Shared skill resolution for normal run configuration and standby preparation.
+
 use std::path::{Path, PathBuf};
 
 use warp_cli::skill::SkillSpec;
@@ -10,6 +12,7 @@ use crate::ai::skills::{
     ResolveSkillError, ResolvedSkill, clone_repo_for_skill, resolve_skill_spec,
 };
 
+/// Resolves one skill, optionally cloning its repository under the workspace root first.
 pub(crate) async fn resolve_skill<H: Entity + 'static>(
     foreground: &ModelSpawner<H>,
     spec: SkillSpec,
@@ -45,6 +48,7 @@ pub(crate) async fn resolve_skill<H: Entity + 'static>(
     Ok(skill)
 }
 
+/// Resolves skills in order and returns the first skill plus all skill search directories.
 pub(crate) async fn resolve_configured_skills<H: Entity + 'static>(
     foreground: &ModelSpawner<H>,
     specs: Vec<SkillSpec>,
@@ -73,6 +77,7 @@ pub(crate) async fn resolve_configured_skills<H: Entity + 'static>(
     selected_execution_skills(resolved)
 }
 
+/// Keeps the first skill for prompt context and collects unique search paths for `WARP_SKILL_DIRS`.
 pub(crate) fn selected_execution_skills(
     skills: Vec<ResolvedSkill>,
 ) -> Result<(Option<ResolvedSkill>, Vec<PathBuf>), AgentDriverError> {
@@ -104,6 +109,7 @@ pub(crate) fn selected_execution_skills(
     Ok((first, discovery_dirs))
 }
 
+/// Adds skill search directories without duplicates or changes to the existing search order.
 pub(crate) fn merge_skill_dirs(dirs: &mut Vec<PathBuf>, discovery_dirs: Vec<PathBuf>) {
     for dir in discovery_dirs {
         if !dirs.contains(&dir) {

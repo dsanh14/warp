@@ -1,4 +1,4 @@
-//! Resource preparation without executing an agent prompt.
+//! Shared resource setup for normal runs and standby sandboxes before an agent prompt starts.
 
 use std::ffi::OsStr;
 use std::path::PathBuf;
@@ -39,7 +39,7 @@ use crate::terminal::shell::ShellType;
 
 pub(crate) mod configured_skills;
 impl AgentDriver {
-    /// Prepares Oz resources without starting a run.
+    /// Consumes the workspace once to prepare standby resources without starting a prompt.
     #[cfg_attr(all(target_family = "wasm", not(test)), expect(dead_code))]
     pub(crate) async fn prepare_resources(
         foreground: &ModelSpawner<Self>,
@@ -47,6 +47,7 @@ impl AgentDriver {
         global_skills: GlobalSkillResolution,
         setup_events: &SetupClientEventReporter,
     ) -> Result<PathBuf, AgentDriverError> {
+        // Standby resolves global skills before this call to check checkout names before any clone.
         let mut workspace = foreground
             .spawn(|me, _| me.workspace.take())
             .await?
@@ -124,11 +125,15 @@ impl AgentDriver {
     }
 }
 
+/// Keeps workspace setup results for harness startup and skill discovery.
 pub(crate) struct PreparedWorkspace {
+    /// Selects the single repository directory, or the root for zero or multiple repositories.
     pub harness_working_dir: PathBuf,
+    /// Identifies workspace repositories to scan for skills, excluding deferred repositories.
     pub repositories: Vec<SourceRepo>,
 }
 
+/// Waits for shell integration before setup can execute terminal commands.
 pub(crate) async fn bootstrap_terminal(
     foreground: &ModelSpawner<AgentDriver>,
     setup_events: &SetupClientEventReporter,
@@ -147,6 +152,7 @@ pub(crate) async fn bootstrap_terminal(
         .await
 }
 
+/// Resolves global skills and attempts their repository clones as part of normal run setup.
 pub(crate) async fn prepare_global_skills(
     foreground: &ModelSpawner<AgentDriver>,
     setup_events: &SetupClientEventReporter,
@@ -166,6 +172,7 @@ pub(crate) async fn prepare_global_skills(
     Ok(skills)
 }
 
+/// Runs workspace setup and returns the harness directory and repositories to scan for skills.
 pub(crate) async fn prepare_workspace(
     foreground: &ModelSpawner<AgentDriver>,
     harness: Harness,
@@ -203,6 +210,7 @@ pub(crate) async fn prepare_workspace(
     })
 }
 
+/// Loads workspace, global, and configured-directory skills without making load failures fatal.
 pub(crate) async fn load_skills(
     foreground: &ModelSpawner<AgentDriver>,
     repositories: Vec<SourceRepo>,
@@ -226,12 +234,15 @@ pub(crate) async fn load_skills(
         .await;
 }
 
+/// Keeps one resolved global skill selection consistent through validation, cloning, and loading.
 pub(crate) struct GlobalSkillResolution {
+    /// Selects which skills to load from the cloned repositories.
     pub specs: Vec<SkillSpec>,
+    /// Lists the repositories needed to supply the selected skills.
     pub repos: Vec<GithubRepo>,
 }
 
-/// Resolve global skill specs and the GitHub repositories that should be cloned for them.
+/// Reads global skill settings without cloning repositories or requiring an agent driver.
 pub(crate) async fn resolve_global_skills<H: Entity>(
     foreground: &ModelSpawner<H>,
 ) -> Result<GlobalSkillResolution, AgentDriverError> {
@@ -532,6 +543,7 @@ pub(crate) async fn load_skills_dirs(foreground: &ModelSpawner<AgentDriver>) {
     }
 }
 
+/// Loads the bundled instructions that let an active Factory run discover and clone deferred repos.
 pub(crate) async fn load_factory_deferred_repositories_skill(
     foreground: &ModelSpawner<AgentDriver>,
 ) {
