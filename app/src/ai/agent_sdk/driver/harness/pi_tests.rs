@@ -49,8 +49,16 @@ fn settings_preserve_existing_values_and_add_only_external_skills() {
         dir.path().join(".agents/skills"),
         dir.path().join("factory/skills"),
     ];
+    let harness_skills = dir.path().join("harness_skills");
     for _ in 0..2 {
-        prepare_pi_settings(&settings_path, dir.path(), dir.path(), &skill_dirs).unwrap();
+        prepare_pi_settings(
+            &settings_path,
+            dir.path(),
+            dir.path(),
+            &skill_dirs,
+            Some(&harness_skills),
+        )
+        .unwrap();
     }
 
     let settings: Value = serde_json::from_slice(&fs::read(settings_path).unwrap()).unwrap();
@@ -62,7 +70,11 @@ fn settings_preserve_existing_values_and_add_only_external_skills() {
     assert_eq!(settings["extensions"], json!(["custom", "-builtin:mcp"]));
     assert_eq!(
         settings["skills"],
-        json!(["existing", dir.path().join("factory/skills")])
+        json!([
+            "existing",
+            harness_skills,
+            dir.path().join("factory/skills")
+        ])
     );
     assert_eq!(settings["defaultProjectTrust"], "always");
 }

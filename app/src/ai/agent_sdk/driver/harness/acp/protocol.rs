@@ -105,6 +105,21 @@ pub(super) struct NewSessionResponse {
     pub session_id: String,
     #[serde(default)]
     pub config_options: Vec<AcpAdvertisedSetting>,
+    #[serde(rename = "_meta", default)]
+    pub meta: serde_json::Value,
+}
+
+impl NewSessionResponse {
+    /// Text pi-acp announces out of band and then also streams as the session's first agent
+    /// message, ahead of any prompt.
+    pub(super) fn pi_acp_startup_info(&self) -> Option<String> {
+        self.meta
+            .pointer("/piAcp/startupInfo")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    }
 }
 
 /// An adapter-advertised ACP setting. Model and thinking settings share this wire representation.

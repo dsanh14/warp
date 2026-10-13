@@ -63,8 +63,8 @@ use self::protocol::{
     CancelParams, ClientCapabilities, ClientInfo, ContentBlock, FsCapabilities, InitializeParams,
     InitializeResponse, McpServer, NewSessionParams, NewSessionResponse, PROTOCOL_VERSION,
     PermissionOptionKind, PermissionOutcome, PromptParams, PromptResponse, ReadTextFileParams,
-    ReadTextFileResponse, RequestPermissionParams, RequestPermissionResponse, SessionUpdateParams,
-    StopReason, WriteTextFileParams,
+    ReadTextFileResponse, RequestPermissionParams, RequestPermissionResponse, SessionUpdate,
+    SessionUpdateParams, StopReason, WriteTextFileParams,
 };
 use super::super::terminal::{CommandHandle, TerminalDriver};
 use super::super::{AgentDriver, AgentDriverError};
@@ -705,7 +705,8 @@ impl HarnessRunner for AcpHarnessRunner {
                 Harness::Claude | Harness::Codex | Harness::Gemini => {}
                 Harness::Oz | Harness::OpenCode | Harness::Unknown => {}
             }
-            Ok::<_, anyhow::Error>(session.session_id)
+            let startup_banner = session.pi_acp_startup_info();
+            Ok::<_, anyhow::Error>((session.session_id, startup_banner))
         }
         .fuse();
         pin_mut!(handshake);
@@ -716,8 +717,8 @@ impl HarnessRunner for AcpHarnessRunner {
                 Err(anyhow!("the agent did not complete its handshake within {HANDSHAKE_TIMEOUT:?}"))
             }
         };
-        let session_id = match session_id {
-            Ok(session_id) => session_id,
+        let (session_id, startup_banner) = match session_id {
+            Ok(session) => session,
             Err(error) => {
                 connection.close().await;
                 self.interrupt_terminal(foreground).await;
@@ -792,6 +793,7 @@ impl HarnessRunner for AcpHarnessRunner {
             run_id,
             turn: Mutex::new(turn),
             session_id,
+            startup_banner: Mutex::new(startup_banner),
             prompt_text: self.prompt_text.clone(),
             attachments: self.attachments.clone(),
             conversation_id: local_conversation_id,
@@ -904,6 +906,9 @@ struct TurnDriver {
     /// The currently open request stream.
     turn: Mutex<ExternalHarnessTurn>,
     session_id: String,
+    /// Startup text the adapter announced at `session/new` and will stream once as an agent
+    /// message. Taken when that chunk is dropped.
+    startup_banner: Mutex<Option<String>>,
     prompt_text: String,
     attachments: Arc<AttachmentResolver>,
     conversation_id: AIConversationId,
@@ -1077,6 +1082,13 @@ impl TurnDriver {
                 return Ok(());
             }
         };
+        if let SessionUpdate::AgentMessageChunk { content, .. } = &params.update {
+            let mut banner = self.startup_banner.lock();
+            if banner.as_deref() == Some(content.as_text().trim()) {
+                banner.take();
+                return Ok(());
+            }
+        }
         let events = mapper.map_update(params.update);
         self.apply_events(mapper, events).await
     }
