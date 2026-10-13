@@ -108,7 +108,7 @@ impl BaseClient {
     pub async fn download_presigned(&self, url: &str) -> Result<bytes::Bytes> {
         let response = self
             .external_http_client()
-            .external_request(http::Method::GET, url)
+            .get(url)
             .send()
             .await
             .map_err(reqwest::Error::without_url)

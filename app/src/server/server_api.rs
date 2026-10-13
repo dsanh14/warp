@@ -493,18 +493,16 @@ impl ServerApi {
             path_prefix: None,
         };
         let authenticated_graphql = AuthenticatedGraphqlConfig::default();
-        let base_client = Arc::new(
-            BaseClient::new(
-                client,
-                auth_state,
-                event_sender,
-                agent_source.map(|source| source.as_str().to_string()),
-                graphql_routing,
-                authenticated_graphql,
-                iap_token_provider,
-            )
-            .with_external_http_client(external_client),
-        );
+        let base_client = Arc::new(BaseClient::new(
+            client,
+            external_client,
+            auth_state,
+            event_sender,
+            agent_source.map(|source| source.as_str().to_string()),
+            graphql_routing,
+            authenticated_graphql,
+            iap_token_provider,
+        ));
 
         Self {
             base_client,

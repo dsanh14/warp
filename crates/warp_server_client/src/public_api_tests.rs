@@ -95,6 +95,7 @@ fn presigned_download_keeps_api_context_off_storage() {
     let (event_sender, _) = async_channel::unbounded();
     let client = BaseClient::new(
         Arc::new(api_http_client),
+        Arc::new(http_client::Client::new_external()),
         Arc::new(auth_state),
         event_sender,
         Some("cloud-mode".into()),
@@ -136,6 +137,7 @@ fn base_client_with_auth(
     let (event_sender, event_receiver) = async_channel::unbounded();
     let client = BaseClient::new(
         Arc::new(http_client::Client::new()),
+        Arc::new(http_client::Client::new_external()),
         Arc::new(auth_state),
         event_sender,
         agent_source,

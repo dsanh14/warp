@@ -216,14 +216,13 @@ fn build_upload_request<'a>(
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case(CONTENT_LENGTH_HEADER_NAME));
 
-    let method = match method.as_str() {
-        "GET" => http::Method::GET,
-        "POST" => http::Method::POST,
-        "PUT" => http::Method::PUT,
-        "DELETE" => http::Method::DELETE,
+    let mut request = match method.as_str() {
+        "GET" => http_client.get(target.url),
+        "POST" => http_client.post(target.url),
+        "PUT" => http_client.put(target.url),
+        "DELETE" => http_client.delete(target.url),
         other => return Err(anyhow!("Unsupported HTTP method: {other}")),
     };
-    let mut request = http_client.external_request(method, target.url);
 
     for (name, value) in &target.headers {
         request = request.header(*name, *value);

@@ -64,15 +64,17 @@ const EXTRA_HTTP_HEADERS_ENV_VAR: &str = "WARP_EXTRA_HTTP_HEADERS";
 /// run outside of a Tokio context.
 pub struct Client {
     wrapped: reqwest::Client,
-    external: bool,
+    include_warp_headers: bool,
+    #[cfg(target_family = "wasm")]
+    omit_credentials: bool,
 
     /// A callback that is executed before every request is sent with a cloned
     /// version of the outbound request.  If for some reason the request cannot be
     /// cloned the function is not called.
-    before_request_sent: Option<Arc<RequestHookFn>>,
+    before_request_sent: Option<RequestHookFn>,
 
     /// A callback that is executed on after each response is received.
-    after_response_received: Option<Arc<ResponseHookFn>>,
+    after_response_received: Option<ResponseHookFn>,
 
     /// If set, provides IAP bearer tokens to attach as `Proxy-Authorization`
     /// headers on outbound requests to the Warp staging server. Wired in by
@@ -124,13 +126,6 @@ pub struct Request {
     wrapped: reqwest::Request,
     serialized_payload: Option<String>,
     prevent_sleep_reason: Option<&'static str>,
-    external_context: Option<ExternalRequestContext>,
-}
-
-struct ExternalRequestContext {
-    client: reqwest::Client,
-    before_request_sent: Option<Arc<RequestHookFn>>,
-    after_response_received: Option<Arc<ResponseHookFn>>,
 }
 
 /// A wrapper around a `reqwest::Response` that ensures any async calls to the underlying `Response`
@@ -166,12 +161,12 @@ impl Client {
     /// Creates a pooled client without automatic Warp headers, IAP tokens, or browser credentials.
     pub fn new_external() -> Self {
         let mut client = Self::new();
-        client.external = true;
+        client.include_warp_headers = false;
+        #[cfg(target_family = "wasm")]
+        {
+            client.omit_credentials = true;
+        }
         client
-    }
-
-    pub fn is_external(&self) -> bool {
-        self.external
     }
 
     #[cfg(feature = "test-util")]
@@ -189,7 +184,9 @@ impl Client {
     pub fn from_client_builder(client_builder: reqwest::ClientBuilder) -> reqwest::Result<Self> {
         client_builder.build().map(|client| Self {
             wrapped: client,
-            external: false,
+            include_warp_headers: true,
+            #[cfg(target_family = "wasm")]
+            omit_credentials: false,
             before_request_sent: None,
             after_response_received: None,
             iap_token_provider: None,
@@ -197,11 +194,11 @@ impl Client {
     }
 
     pub fn set_before_request_fn(&mut self, hook_fn: RequestHookFn) {
-        self.before_request_sent = Some(Arc::new(hook_fn));
+        self.before_request_sent = Some(hook_fn);
     }
 
     pub fn set_after_response_fn(&mut self, hook_fn: ResponseHookFn) {
-        self.after_response_received = Some(Arc::new(hook_fn));
+        self.after_response_received = Some(hook_fn);
     }
 
     pub fn set_iap_token_provider(&mut self, provider: Arc<dyn IapTokenProvider>) {
@@ -215,7 +212,7 @@ impl Client {
         iap_token: Option<String>,
     ) -> RequestBuilder<'_> {
         #[cfg(target_family = "wasm")]
-        let wrapped = if self.external {
+        let wrapped = if self.omit_credentials {
             wrapped.fetch_credentials_omit()
         } else {
             wrapped
@@ -227,27 +224,16 @@ impl Client {
             prevent_sleep_reason: None,
         };
 
-        if include_warp_headers && !self.external {
+        if include_warp_headers && self.include_warp_headers {
             builder = Self::add_warp_http_headers(builder);
         }
 
-        if !self.external
-            && let Some(token) = iap_token
-        {
+        if let Some(token) = iap_token {
             let (name, value) = proxy_auth_header(&token);
             builder = builder.header(name, value);
         }
 
         builder
-    }
-
-    /// Builds an undecorated request using this client's configured transport.
-    /// Explicitly supplied headers are preserved; browser credentials are omitted.
-    pub fn external_request<U: IntoUrl>(&self, method: http::Method, url: U) -> RequestBuilder<'_> {
-        let wrapped = self.wrapped.request(method, url);
-        #[cfg(target_family = "wasm")]
-        let wrapped = wrapped.fetch_credentials_omit();
-        self.builder(wrapped, false, None)
     }
 
     pub fn get<U: IntoUrl + Clone>(&self, url: U) -> RequestBuilder<'_> {
@@ -283,9 +269,6 @@ impl Client {
     /// Returns the IAP bearer token to attach to a request targeting
     /// `url`, scoped to the Warp server's origin.
     fn iap_token_for<U: IntoUrl>(&self, url: U) -> Option<String> {
-        if self.external {
-            return None;
-        }
         let provider = self.iap_token_provider.as_ref()?;
         let url = url.into_url().ok()?;
         if !is_warp_server_origin(&url) {
@@ -412,24 +395,9 @@ impl Client {
             wrapped: request,
             serialized_payload,
             prevent_sleep_reason,
-            external_context,
         } = request;
 
-        let (client, before_request_sent, after_response_received) =
-            if let Some(context) = &external_context {
-                (
-                    &context.client,
-                    &context.before_request_sent,
-                    &context.after_response_received,
-                )
-            } else {
-                (
-                    &self.wrapped,
-                    &self.before_request_sent,
-                    &self.after_response_received,
-                )
-            };
-        if let Some(before_response_send_fn) = before_request_sent {
+        if let Some(before_response_send_fn) = &self.before_request_sent {
             before_response_send_fn(&request, &serialized_payload);
         }
 
@@ -437,17 +405,17 @@ impl Client {
 
         cfg_if::cfg_if! {
             if #[cfg(target_family = "wasm")] {
-                let result = client.execute(request).await?;
+                let result = self.wrapped.execute(request).await?;
             } else {
                 // Explicitly await the future before converting from tokio -> futures. This is because
                 // certain calls to tokio (such as tokio::time::sleep) will panic upon creation if they
                 // are not in a tokio runtime. Wrapping the call in an async block first makes sure that it
                 // is lazily evaluated, ensuring that it is created within a tokio runtime.
-                let result = Compat::new(async { client.execute(request).await }).await?;
+                let result = Compat::new(async { self.wrapped.execute(request).await }).await?;
             }
         }
 
-        if let Some(after_response_received_fn) = after_response_received {
+        if let Some(after_response_received_fn) = &self.after_response_received {
             after_response_received_fn(&result);
         }
 
@@ -507,11 +475,6 @@ impl<'a> RequestBuilder<'a> {
             wrapped: request,
             serialized_payload: self.serialized_payload,
             prevent_sleep_reason: self.prevent_sleep_reason,
-            external_context: self.client.external.then(|| ExternalRequestContext {
-                client: self.client.wrapped.clone(),
-                before_request_sent: self.client.before_request_sent.clone(),
-                after_response_received: self.client.after_response_received.clone(),
-            }),
         });
         (self.client, request)
     }

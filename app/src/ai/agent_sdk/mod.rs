@@ -1717,7 +1717,7 @@ impl AgentDriverRunner {
             }
             driver::attachments::fetch_and_download_handoff_snapshot_attachments(
                 ai_client.clone(),
-                server_api.http_client(),
+                server_api.external_http_client(),
                 task_id,
                 attachments_dir.clone(),
             )
@@ -1816,7 +1816,7 @@ impl AgentDriverRunner {
             };
             driver::attachments::fetch_and_download_handoff_snapshot_attachments(
                 handoff_snapshot_ai_client,
-                handoff_snapshot_server_api.http_client(),
+                handoff_snapshot_server_api.external_http_client(),
                 task_id_parsed,
                 handoff_snapshot_download_dir,
             )

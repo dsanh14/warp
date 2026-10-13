@@ -70,22 +70,14 @@ impl NetworkLogModel {
         ctx.spawn_stream_local(rx, |model, item, ctx| model.push(item, ctx), |_, _| {});
 
         for client in http_clients {
-            let external = client.is_external();
             let request_tx = tx.clone();
             client.set_before_request_fn(Box::new(move |request, serialized_payload| {
                 if !request_tx.is_closed()
-                    && let Err(error) = request_tx.try_send(if external {
-                        NetworkLogItem::external_request(
-                            request,
-                            chrono::Local::now().fixed_offset(),
-                        )
-                    } else {
-                        NetworkLogItem::request(
-                            request,
-                            serialized_payload.clone(),
-                            chrono::Local::now().fixed_offset(),
-                        )
-                    })
+                    && let Err(error) = request_tx.try_send(NetworkLogItem::request(
+                        request,
+                        serialized_payload.clone(),
+                        chrono::Local::now().fixed_offset(),
+                    ))
                 {
                     report_error!(
                         anyhow::Error::new(error)
@@ -97,14 +89,10 @@ impl NetworkLogModel {
             let response_tx = tx.clone();
             client.set_after_response_fn(Box::new(move |response| {
                 if !response_tx.is_closed()
-                    && let Err(error) = response_tx.try_send(if external {
-                        NetworkLogItem::external_response(
-                            response,
-                            chrono::Local::now().fixed_offset(),
-                        )
-                    } else {
-                        NetworkLogItem::response(response, chrono::Local::now().fixed_offset())
-                    })
+                    && let Err(error) = response_tx.try_send(NetworkLogItem::response(
+                        response,
+                        chrono::Local::now().fixed_offset(),
+                    ))
                 {
                     report_error!(
                         anyhow::Error::new(error)
@@ -128,28 +116,14 @@ impl Entity for NetworkLogModel {
 
 impl SingletonEntity for NetworkLogModel {}
 
-/// A timestamped network activity entry.
+/// Represents an item (either a request or response) captured for the network
+/// activity log. The inner string contains a timestamp and the
+/// [`Debug`]-formatted representation of the request or response, matching the
+/// format previously written to `warp_network.log`.
 #[derive(Clone, Debug)]
 pub struct NetworkLogItem(String);
 
 impl NetworkLogItem {
-    fn external_request(request: &reqwest::Request, timestamp: DateTime<FixedOffset>) -> Self {
-        Self(format!(
-            "[{}]: External request {} {}",
-            timestamp.format("%Y-%m-%d %H:%M:%S,%3f"),
-            request.method(),
-            request.url().origin().ascii_serialization(),
-        ))
-    }
-
-    fn external_response(response: &reqwest::Response, timestamp: DateTime<FixedOffset>) -> Self {
-        Self(format!(
-            "[{}]: External response {} {}",
-            timestamp.format("%Y-%m-%d %H:%M:%S,%3f"),
-            response.status(),
-            response.url().origin().ascii_serialization(),
-        ))
-    }
     pub fn request(
         request: &reqwest::Request,
         serialized_payload: Option<String>,

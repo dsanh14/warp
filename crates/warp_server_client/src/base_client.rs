@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
@@ -122,7 +122,7 @@ pub struct AuthenticatedGraphqlConfig {
 /// Owns shared transport, authentication, and authenticated request decoration.
 pub struct BaseClient {
     client: Arc<http_client::Client>,
-    external_client: OnceLock<Arc<http_client::Client>>,
+    external_client: Arc<http_client::Client>,
     auth_state: Arc<AuthState>,
     event_sender: async_channel::Sender<AuthEvent>,
     auth_session: Arc<AuthSession>,
@@ -136,8 +136,10 @@ pub struct BaseClient {
 }
 
 impl BaseClient {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         client: Arc<http_client::Client>,
+        external_client: Arc<http_client::Client>,
         auth_state: Arc<AuthState>,
         event_sender: async_channel::Sender<AuthEvent>,
         agent_source: Option<String>,
@@ -180,7 +182,7 @@ impl BaseClient {
         ));
         Self {
             client,
-            external_client: OnceLock::new(),
+            external_client,
             auth_state,
             event_sender,
             auth_session,
@@ -215,21 +217,9 @@ impl BaseClient {
         self.client.as_ref()
     }
 
-    /// Configures the external transport.
-    pub fn with_external_http_client(mut self, client: Arc<http_client::Client>) -> Self {
-        assert!(
-            client.is_external(),
-            "external transport must omit Warp decoration"
-        );
-        self.external_client = OnceLock::from(client);
-        self
-    }
-
     /// Returns the pooled external HTTP client.
     pub fn external_http_client(&self) -> &http_client::Client {
-        self.external_client
-            .get_or_init(|| Arc::new(http_client::Client::new_external()))
-            .as_ref()
+        self.external_client.as_ref()
     }
 
     /// Returns an owned handle to the shared HTTP client for GraphQL operations.

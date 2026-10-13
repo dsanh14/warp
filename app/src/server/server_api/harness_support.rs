@@ -413,7 +413,7 @@ pub trait HarnessSupportClient: 'static + Send + Sync {
     async fn fetch_transcript(&self) -> Result<bytes::Bytes>;
 
     /// Get an HTTP client to use with [`UploadTarget`]s for saving blobs.
-    fn http_client(&self) -> &http_client::Client;
+    fn external_http_client(&self) -> &http_client::Client;
 }
 
 impl ServerApi {
@@ -690,7 +690,7 @@ impl HarnessSupportClient for ServerApi {
         }
     }
 
-    fn http_client(&self) -> &http_client::Client {
+    fn external_http_client(&self) -> &http_client::Client {
         self.base_client.external_http_client()
     }
 }
