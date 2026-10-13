@@ -87,9 +87,16 @@ fn empty_configured_skill_dirs_suppress_ambient_sources() {
 
     let published_root = workspace.path().join("harness/skills");
     assert!(
-        publish_skills_for_harness(&published_root, workspace.path(), false, &[], false,)
-            .unwrap()
-            .is_empty()
+        publish_skills_for_harness(
+            &published_root,
+            workspace.path(),
+            false,
+            &[],
+            false,
+            HarnessSupportSkills::Plugin,
+        )
+        .unwrap()
+        .is_empty()
     );
     assert!(!published_root.exists());
 }
@@ -118,6 +125,7 @@ fn resolved_skill_dirs_are_published_relative_to_workspace_root() {
         false,
         &source_dirs,
         false,
+        HarnessSupportSkills::Plugin,
     )
     .unwrap();
     let link = published_root.join("factory-skill");

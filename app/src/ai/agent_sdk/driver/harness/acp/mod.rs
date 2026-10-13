@@ -75,6 +75,7 @@ use super::harness_persistence::{
     HarnessPersistence, PersistenceOutcome, save_transcript_and_conversation_data,
 };
 use super::pi::prepare_pi_environment_config;
+use super::skill_dirs_publish::HarnessSupportSkills;
 use super::transcript_persistence::{
     UploadedTranscriptUsage, capture_transcript_with_retry, upload_captured_transcript,
 };
@@ -150,6 +151,7 @@ impl AcpHarness {
                 resolved_env_vars,
                 skill_dirs,
                 has_deferred_repositories,
+                HarnessSupportSkills::Bundled,
             ),
             // MCP servers are handed to the agent in `session/new` rather than written into
             // `config.toml`, so they are not registered twice.
@@ -167,6 +169,7 @@ impl AcpHarness {
                     harness_working_dir,
                     skill_dirs,
                     has_deferred_repositories,
+                    HarnessSupportSkills::Bundled,
                 )
             }
             Harness::Gemini => {
@@ -176,6 +179,7 @@ impl AcpHarness {
                     harness_working_dir,
                     skill_dirs,
                     has_deferred_repositories,
+                    HarnessSupportSkills::Bundled,
                 )
             }
             Harness::Pi => prepare_pi_environment_config(

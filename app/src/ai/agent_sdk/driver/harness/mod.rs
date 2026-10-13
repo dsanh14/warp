@@ -63,6 +63,7 @@ use codex_transcript::CodexResumeInfo;
 use gemini::GeminiHarness;
 use harness_persistence::{HarnessPersistence, PersistenceOutcome};
 use pi::pi_env_vars;
+pub(crate) use skill_dirs_publish::HarnessSupportSkills;
 pub(crate) use telemetry::ThirdPartyHarnessTelemetryEvent;
 
 const HARNESS_FAILURE_OUTPUT_TRUNCATION_MARKER: &str = "\n… harness output truncated …\n";

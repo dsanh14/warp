@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, anyhow};
 use serde_json::{Map, Value, json};
 use tempfile::Builder;
-use warp_core::paths::bundled_resources_dir;
 use warp_managed_secrets::ManagedSecretValue;
 
 use super::JSONMCPServer;
 use super::json_utils::{read_json_file_or_default, write_json_file};
+use super::skill_dirs_publish::bundled_harness_support_skills_dir;
 use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::ai::mcp::JSONTransportType;
 
@@ -37,14 +37,6 @@ fn pi_package_dir() -> Option<PathBuf> {
 fn seeded_extension_dir(package_dir: &Path) -> Option<PathBuf> {
     let npm = package_dir.join("npm");
     npm.is_dir().then_some(npm)
-}
-
-/// Oz's harness-support skills shipped with the Warp binary, when the bundled resources are
-/// available.
-fn bundled_harness_skills_dir() -> Option<PathBuf> {
-    bundled_resources_dir()
-        .map(|root| root.join("bundled").join("harness_skills"))
-        .filter(|dir| dir.is_dir())
 }
 
 pub(super) fn pi_env_vars() -> Result<HashMap<OsString, OsString>> {
@@ -122,7 +114,7 @@ pub(super) fn prepare_pi_environment_config(
         workspace_root,
         harness_working_dir,
         skill_dirs,
-        bundled_harness_skills_dir().as_deref(),
+        bundled_harness_support_skills_dir().as_deref(),
     )?;
     if let Some(prompt) = system_prompt {
         prepare_pi_system_prompt(&agent_dir, harness_working_dir, prompt)?;

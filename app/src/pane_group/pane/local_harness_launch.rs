@@ -10,7 +10,8 @@ use warp_cli::agent::{Harness, HarnessTransport};
 use crate::ai::agent_sdk::driver::AgentDriverError;
 use crate::ai::agent_sdk::driver::harness::claude_code::prepare_claude_environment_config;
 use crate::ai::agent_sdk::driver::harness::{
-    HarnessKind, harness_env_vars, harness_kind, remove_claude_externally_managed_listener_env_vars,
+    HarnessKind, HarnessSupportSkills, harness_env_vars, harness_kind,
+    remove_claude_externally_managed_listener_env_vars,
 };
 use crate::ai::agent_sdk::{task_env_vars, validate_cli_installed};
 use crate::ai::ambient_agents::task::{
@@ -217,6 +218,7 @@ pub(super) async fn prepare_local_harness_child_launch(
                 &HashMap::new(),
                 &ai::skills::parse_skills_dirs_env(),
                 false,
+                HarnessSupportSkills::Plugin,
             )
             .map_err(|error| error.to_string())?;
             if let Some(manager) = plugin_manager_for(third_party_harness.cli_agent()) {
