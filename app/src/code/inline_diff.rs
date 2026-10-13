@@ -352,6 +352,8 @@ impl InlineDiffView {
                         Some(DiffType::Delete { .. })
                             if matches!(self.session_type, Some(DiffSessionType::Local)) =>
                         {
+                            // Local IDs cache canonical paths, so reuse could write a deleted
+                            // symlink's referent. Remote IDs already preserve the requested path.
                             let original_path =
                                 self.file_path.as_ref().expect("registered file has a path");
                             file_model.update(ctx, |model, ctx| {
