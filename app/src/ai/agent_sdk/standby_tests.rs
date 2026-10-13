@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::TimeDelta;
 use futures::executor::block_on;
 use warpui::App;
+use warpui::r#async::FutureExt as _;
 
 use super::*;
 use crate::server::server_api::ai::MockAIClient;
@@ -48,6 +49,36 @@ fn invalid_preparation_inputs_fail_before_driver_creation_or_metadata_access() {
     });
 }
 
+#[test]
+fn skill_checkout_collisions_fail_before_cloning_or_metadata_access() {
+    App::test((), |mut app| async move {
+        let runner = app.add_singleton_model(|_| AgentDriverRunner);
+        let foreground = runner.update(&mut app, |_, ctx| ctx.spawner());
+        let setup_events = SetupClientEventReporter::noop(
+            Arc::new(MockAIClient::new()),
+            app.background_executor(),
+        );
+        for specs in [
+            vec!["another-org/warp:review"],
+            vec!["first-org/tools:review", "second-org/tools:review"],
+        ] {
+            let mut config = parse_configuration();
+            config.preparation.skills = specs.into_iter().map(str::to_owned).collect();
+            let error = prepare(&foreground, config, &setup_events)
+                .await
+                .unwrap_err();
+            let AgentDriverError::ConfigBuildFailed(source) = error else {
+                panic!("expected a checkout collision, got {error}");
+            };
+            assert!(
+                source.to_string().contains("share a clone directory name"),
+                "{source:#}"
+            );
+            assert!(!app.update(|ctx| ctx.has_singleton_model::<AgentDriver>()));
+        }
+    });
+}
+
 /// A recorded call against the fake client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Call {
@@ -60,6 +91,7 @@ struct FakeClientState {
     calls: Vec<Call>,
     fail_status: bool,
     fail_heartbeat: bool,
+    status_release: Option<oneshot::Receiver<()>>,
 }
 
 #[derive(Default)]
@@ -91,12 +123,18 @@ impl PrewarmedSandboxClient for FakeClient {
     ) -> anyhow::Result<()> {
         assert_eq!(sandbox_id, "sandbox");
         assert_eq!(generation, "abc123");
-        let mut client = self.state.lock().expect("uncontended");
-        client.calls.push(Call::Status(state));
-        if let Some(events) = &self.events {
-            events.try_send(Call::Status(state)).unwrap();
+        let (fail_status, status_release) = {
+            let mut client = self.state.lock().expect("uncontended");
+            client.calls.push(Call::Status(state));
+            if let Some(events) = &self.events {
+                events.try_send(Call::Status(state)).unwrap();
+            }
+            (client.fail_status, client.status_release.take())
+        };
+        if let Some(release) = status_release {
+            release.await.unwrap();
         }
-        if client.fail_status {
+        if fail_status {
             anyhow::bail!("workload token acquisition failed");
         }
         Ok(())
@@ -226,6 +264,160 @@ fn preparation_error_survives_a_status_credential_failure() {
         client.calls(),
         [Call::Status(PrewarmedSandboxState::Failed)]
     );
+}
+
+#[test]
+fn expiry_cancels_in_flight_preparation_without_reporting_ready() {
+    block_on(async {
+        let (events_tx, events) = async_channel::unbounded();
+        let client = FakeClient {
+            events: Some(events_tx),
+            ..Default::default()
+        };
+        let (started_tx, started_rx) = oneshot::channel();
+        let (prepared_tx, prepared_rx) = oneshot::channel();
+        let (expire_tx, expire_rx) = oneshot::channel();
+        let (ticks_tx, ticks) = futures::channel::mpsc::unbounded();
+        let lifecycle = maintain_sandbox(
+            &client,
+            "sandbox",
+            "abc123",
+            async {
+                started_tx.send(()).unwrap();
+                prepared_rx.await.unwrap()
+            },
+            expire_rx.map(|_| StandbyExit::Expired),
+            ticks,
+        );
+        let exercise = async {
+            started_rx.await.unwrap();
+            ticks_tx.unbounded_send(()).unwrap();
+            assert_eq!(events.recv().await.unwrap(), Call::Heartbeat);
+            expire_tx.send(()).unwrap();
+        };
+        let (result, ()) = futures::future::join(lifecycle, exercise)
+            .with_timeout(Duration::from_secs(5))
+            .await
+            .expect("expiry must cancel unfinished preparation");
+        result.unwrap();
+        assert!(prepared_tx.is_canceled());
+        assert_eq!(client.calls(), [Call::Heartbeat]);
+    });
+}
+
+#[test]
+fn expiry_wins_when_preparation_completes_at_the_deadline() {
+    block_on(async {
+        let client = FakeClient::default();
+        let (started_tx, started_rx) = oneshot::channel();
+        let (prepared_tx, prepared_rx) = oneshot::channel();
+        let (expire_tx, expire_rx) = oneshot::channel();
+        let lifecycle = maintain_sandbox(
+            &client,
+            "sandbox",
+            "abc123",
+            async {
+                started_tx.send(()).unwrap();
+                prepared_rx.await.unwrap()
+            },
+            expire_rx.map(|_| StandbyExit::Expired),
+            stream::pending(),
+        );
+        let exercise = async {
+            started_rx.await.unwrap();
+            prepared_tx
+                .send(Ok(PreparedSandbox {
+                    generation: "abc123".to_string(),
+                    harness_working_dir: PathBuf::from("/workspace"),
+                    deferred_repositories: Vec::new(),
+                }))
+                .unwrap();
+            expire_tx.send(()).unwrap();
+        };
+        let (result, ()) = futures::future::join(lifecycle, exercise)
+            .with_timeout(Duration::from_secs(5))
+            .await
+            .expect("expiry must take precedence over readiness");
+        result.unwrap();
+        assert!(client.calls().is_empty());
+    });
+}
+
+#[test]
+fn heartbeats_and_expiry_cover_in_flight_status_reports() {
+    for state in [PrewarmedSandboxState::Ready, PrewarmedSandboxState::Failed] {
+        block_on(async {
+            let (events_tx, events) = async_channel::unbounded();
+            let (release_tx, release_rx) = oneshot::channel();
+            let client = FakeClient {
+                state: Mutex::new(FakeClientState {
+                    status_release: Some(release_rx),
+                    ..Default::default()
+                }),
+                events: Some(events_tx),
+            };
+            let preparation = match state {
+                PrewarmedSandboxState::Ready => Ok(PreparedSandbox {
+                    generation: "abc123".to_string(),
+                    harness_working_dir: PathBuf::from("/workspace"),
+                    deferred_repositories: Vec::new(),
+                }),
+                PrewarmedSandboxState::Failed => Err(AgentDriverError::WarpDriveSyncFailed),
+            };
+            let (ticks_tx, ticks) = futures::channel::mpsc::unbounded();
+            let (expire_tx, expire_rx) = oneshot::channel();
+            let lifecycle = maintain_sandbox(
+                &client,
+                "sandbox",
+                "abc123",
+                future::ready(preparation),
+                expire_rx.map(|_| StandbyExit::Expired),
+                ticks,
+            );
+            let exercise = async {
+                assert_eq!(events.recv().await.unwrap(), Call::Status(state));
+                ticks_tx.unbounded_send(()).unwrap();
+                assert_eq!(events.recv().await.unwrap(), Call::Heartbeat);
+                expire_tx.send(()).unwrap();
+            };
+            let (result, ()) = futures::future::join(lifecycle, exercise)
+                .with_timeout(Duration::from_secs(5))
+                .await
+                .expect("a blocked status report must not block heartbeats or expiry");
+            result.unwrap();
+            assert!(release_tx.is_canceled());
+            assert_eq!(client.calls(), [Call::Status(state), Call::Heartbeat]);
+        });
+    }
+}
+
+#[test]
+fn ready_report_failure_ends_standby() {
+    let client = FakeClient::default();
+    client.state.lock().unwrap().fail_status = true;
+    let error = block_on(
+        maintain_sandbox(
+            &client,
+            "sandbox",
+            "abc123",
+            future::ready(Ok(PreparedSandbox {
+                generation: "abc123".to_string(),
+                harness_working_dir: PathBuf::from("/workspace"),
+                deferred_repositories: Vec::new(),
+            })),
+            future::pending(),
+            stream::pending(),
+        )
+        .with_timeout(Duration::from_secs(5)),
+    )
+    .expect("failed readiness reporting must not leave standby idle")
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("workload token acquisition failed")
+    );
+    assert_eq!(client.calls(), [Call::Status(PrewarmedSandboxState::Ready)]);
 }
 
 #[test]

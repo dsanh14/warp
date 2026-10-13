@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
-use cloud_object_models::SourceRepo;
+use cloud_object_models::{CodeForge, SourceRepo};
 use futures::channel::oneshot;
 use futures::{FutureExt as _, Stream, StreamExt as _, future, stream};
 use warp_cli::agent::{Harness, RunCloudStandbyArgs};
@@ -22,7 +22,7 @@ use warpui::{AppContext, ModelSpawner, SingletonEntity};
 use crate::ai::agent_sdk::driver::agent_setup::configured_skills::{
     merge_skill_dirs, resolve_configured_skills,
 };
-use crate::ai::agent_sdk::driver::environment::WorkspaceConfiguration;
+use crate::ai::agent_sdk::driver::environment::{WorkspaceConfiguration, merge_repos_deduped};
 use crate::ai::agent_sdk::driver::{
     AgentDriver, AgentDriverError, AgentDriverOptions, IdleTimeoutSender, git_credentials,
 };
@@ -192,6 +192,7 @@ async fn maintain_sandbox(
     futures::select_biased! {
         reason = exit => match reason {
             StandbyExit::Expired => {
+                // The server owns expires_at; another request could overrun the exit margin.
                 log::info!("Pre-warmed sandbox {sandbox_id} reached its deadline; exiting");
                 Ok(())
             }
@@ -245,6 +246,19 @@ async fn prepare(
         .collect::<anyhow::Result<Vec<_>>>()
         .context("Invalid pre-warmed sandbox skill spec")
         .map_err(AgentDriverError::ConfigBuildFailed)?;
+    let skill_repositories = skills
+        .iter()
+        .filter_map(|spec| {
+            Some(SourceRepo::new(
+                CodeForge::GitHub,
+                spec.org.clone()?,
+                spec.repo.clone()?,
+            ))
+        })
+        .collect();
+    // Skill clones share checkout directories with workspace repositories.
+    merge_repos_deduped(workspace.source_repos.clone(), skill_repositories)
+        .map_err(|error| AgentDriverError::ConfigBuildFailed(error.into()))?;
     let secrets = config
         .managed_secrets
         .into_iter()
