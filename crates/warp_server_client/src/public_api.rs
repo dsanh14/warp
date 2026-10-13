@@ -107,8 +107,8 @@ impl BaseClient {
     /// Downloads bytes from a presigned URL without attaching Warp headers or credentials.
     pub async fn download_presigned(&self, url: &str) -> Result<bytes::Bytes> {
         let response = self
-            .http_client()
-            .request_without_warp_headers(http::Method::GET, url)
+            .external_http_client()
+            .external_request(http::Method::GET, url)
             .send()
             .await
             .map_err(reqwest::Error::without_url)

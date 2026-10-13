@@ -14,7 +14,7 @@ impl IapTokenProvider for TestIapTokenProvider {
 }
 
 #[test]
-fn presigned_request_omits_automatic_headers_and_preserves_signing_headers() {
+fn external_request_omits_automatic_headers_and_preserves_signing_headers() {
     with_active_span(|| {
         let mut client = Client::new();
         client.set_iap_token_provider(Arc::new(TestIapTokenProvider));
@@ -39,8 +39,19 @@ fn presigned_request_omits_automatic_headers_and_preserves_signing_headers() {
                 .contains_key(iap::IAP_PROXY_AUTH_HEADER)
         );
 
-        let request = client
-            .request_without_warp_headers(http::Method::PUT, &url)
+        let mut external_client = Client::new_external();
+        external_client.set_iap_token_provider(Arc::new(TestIapTokenProvider));
+        assert!(
+            external_client
+                .get(&url)
+                .build()
+                .unwrap()
+                .wrapped
+                .headers()
+                .is_empty()
+        );
+        let request = external_client
+            .external_request(http::Method::PUT, &url)
             .header("x-amz-checksum-crc32c", "EjRWeA==")
             .header(AUTHORIZATION, "AWS4-HMAC-SHA256 test-signature")
             .build()

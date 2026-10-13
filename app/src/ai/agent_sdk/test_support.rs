@@ -7,11 +7,10 @@
 /// open past a test's return, which nextest's leak detector flags on retry-exhaustion tests
 /// that spin up multiple connections.
 pub(super) fn build_test_http_client() -> http_client::Client {
-    http_client::Client::new_with_options(http_client::ClientOptions {
-        disable_tls_certificates: true,
-        no_proxy: true,
-        pool_max_idle_per_host: Some(0),
-        ..Default::default()
-    })
-    .expect("should not fail to build test http client")
+    let builder = reqwest::ClientBuilder::new()
+        .tls_certs_only([])
+        .no_proxy()
+        .pool_max_idle_per_host(0);
+    http_client::Client::from_client_builder(builder)
+        .expect("should not fail to build test http client")
 }

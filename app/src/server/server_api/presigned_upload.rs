@@ -223,7 +223,7 @@ fn build_upload_request<'a>(
         "DELETE" => http::Method::DELETE,
         other => return Err(anyhow!("Unsupported HTTP method: {other}")),
     };
-    let mut request = http_client.request_without_warp_headers(method, target.url);
+    let mut request = http_client.external_request(method, target.url);
 
     for (name, value) in &target.headers {
         request = request.header(*name, *value);

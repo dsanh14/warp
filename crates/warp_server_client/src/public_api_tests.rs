@@ -60,13 +60,49 @@ fn presigned_download_keeps_api_context_off_storage() {
             .match_header(AGENT_SOURCE_HEADER, "cloud-mode")
             .match_header(CLOUD_AGENT_ID_HEADER, "ambient-task")
             .match_header(AMBIENT_WORKLOAD_TOKEN_HEADER, "test-workload-token")
+            .match_header("cookie", "session=test-default-cookie")
+            .match_header("proxy-authorization", "Bearer test-default-iap")
+            .match_header("x-test-client-default", "api-only")
             .with_status(200)
             .with_body(serde_json::json!({"url": url}).to_string())
             .create()
     };
     let auth_state = AuthState::new_logged_out_for_test();
     auth_state.set_remote_server_bearer_token("bearer-token".into());
-    let (client, _) = base_client_with_auth(auth_state, Some("cloud-mode".into()), false);
+    let mut defaults = http::HeaderMap::new();
+    for (name, value) in [
+        ("authorization", "Bearer test-default-auth"),
+        ("proxy-authorization", "Bearer test-default-iap"),
+        ("cookie", "session=test-default-cookie"),
+        ("x-warp-client-id", "test-default-client"),
+        ("x-warp-client-version", "test-default-version"),
+        ("x-warp-os-category", "test-default-os"),
+        ("x-warp-os-name", "test-default-os-name"),
+        ("x-oz-api-source", "test-default-source"),
+        (AMBIENT_WORKLOAD_TOKEN_HEADER, "test-default-workload"),
+        (CLOUD_AGENT_ID_HEADER, "test-default-task"),
+        ("x-test-client-default", "api-only"),
+    ] {
+        defaults.insert(
+            http::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            http::HeaderValue::from_static(value),
+        );
+    }
+    let api_http_client = http_client::Client::from_client_builder(
+        reqwest::Client::builder().default_headers(defaults),
+    )
+    .unwrap();
+    let (event_sender, _) = async_channel::unbounded();
+    let client = BaseClient::new(
+        Arc::new(api_http_client),
+        Arc::new(auth_state),
+        event_sender,
+        Some("cloud-mode".into()),
+        GraphqlRoutingConfig::default(),
+        AuthenticatedGraphqlConfig::default(),
+        None,
+    );
+    client.set_ambient_workload_token_for_test("test-workload-token".into(), None);
     client.set_ambient_agent_task_id(Some("ambient-task".into()));
     let bytes = block_on(async {
         let download = client

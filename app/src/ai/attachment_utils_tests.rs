@@ -20,14 +20,13 @@ fn download_path(attachment_id: &str) -> Matcher {
 /// don't hold sockets open past their return (see the identical helper in
 /// `ai::agent_sdk::test_support`, not reusable here across module boundaries).
 fn test_http_client() -> Arc<http_client::Client> {
+    let builder = reqwest::ClientBuilder::new()
+        .tls_certs_only([])
+        .no_proxy()
+        .pool_max_idle_per_host(0);
     Arc::new(
-        http_client::Client::new_with_options(http_client::ClientOptions {
-            disable_tls_certificates: true,
-            no_proxy: true,
-            pool_max_idle_per_host: Some(0),
-            ..Default::default()
-        })
-        .expect("should not fail to build test http client"),
+        http_client::Client::from_client_builder(builder)
+            .expect("should not fail to build test http client"),
     )
 }
 

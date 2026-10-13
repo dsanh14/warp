@@ -61,7 +61,7 @@ fn upload_to_target_replays_headers_for_byte_uploads() {
             .match_header("x-warp-client-id", Matcher::Missing)
             .match_header("x-warp-client-version", Matcher::Missing)
             .match_header("x-oz-api-source", Matcher::Missing)
-            .match_header("authorization", Matcher::Missing)
+            .match_header("authorization", "AWS4-HMAC-SHA256 test-signature")
             .match_header("proxy-authorization", Matcher::Missing)
             .match_query(Matcher::Exact(
                 "X-Amz-Signature=test%2Bsignature&x-id=PutObject".into(),
@@ -70,14 +70,20 @@ fn upload_to_target_replays_headers_for_byte_uploads() {
             .with_status(200)
             .create();
 
-        let client = http_client::Client::new_for_test();
+        let client = http_client::Client::new_external();
         let target = UploadTarget {
             url: format!(
                 "{}/upload?X-Amz-Signature=test%2Bsignature&x-id=PutObject",
                 server.url()
             ),
             method: "POST".to_string(),
-            headers: HashMap::from([("x-test-header".to_string(), "expected-header".to_string())]),
+            headers: HashMap::from([
+                ("x-test-header".to_string(), "expected-header".to_string()),
+                (
+                    "authorization".to_string(),
+                    "AWS4-HMAC-SHA256 test-signature".to_string(),
+                ),
+            ]),
             fields: Vec::new(),
         };
 

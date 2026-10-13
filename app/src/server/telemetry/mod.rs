@@ -68,23 +68,21 @@ impl TelemetryApi {
             } else {
                 use std::time::Duration;
 
-                let client = http_client::Client::new_with_options(
+                let client = http_client::Client::from_client_builder(
                     // We use our own http client directly instead of the Rudderstack SDK's because using
                     // our own client gives us the ability to have universal hooks for pre/post
                     // request/response logic.
-                    http_client::ClientOptions {
+                    reqwest::Client::builder()
                         // Don't allow insecure connections; they will be rejected by
                         // the server with a 403 Forbidden.
-                        https_only: true,
+                        .https_only(true)
                         // Keep idle connections in the pool for up to 55s. AWS
                         // Application Load Balancers will drop idle connections after
                         // 60s and the default pool idle timeout is 90s; a pool idle
                         // timeout longer than the server timeout can lead to errors
                         // upon trying to use an idle connection.
-                        pool_idle_timeout: Some(Duration::from_secs(55)),
-                        connect_timeout: Some(Duration::from_secs(10)),
-                        ..Default::default()
-                    },
+                        .pool_idle_timeout(Duration::from_secs(55))
+                        .connect_timeout(Duration::from_secs(10)),
                 ).expect("Client should be constructed since we use a compatibility layer to use reqwest::Client");
             }
         }

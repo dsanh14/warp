@@ -691,7 +691,7 @@ impl HarnessSupportClient for ServerApi {
     }
 
     fn http_client(&self) -> &http_client::Client {
-        self.base_client.http_client()
+        self.base_client.external_http_client()
     }
 }
 
