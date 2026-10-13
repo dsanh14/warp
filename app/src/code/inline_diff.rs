@@ -1,4 +1,6 @@
 #[cfg(not(target_family = "wasm"))]
+use std::path::PathBuf;
+#[cfg(not(target_family = "wasm"))]
 use std::sync::Arc;
 
 use ai::diff_validation::DiffType;
@@ -61,6 +63,10 @@ pub struct InlineDiffView {
     /// Whether the diff is a new file creation (for revert: delete instead of restore).
     #[cfg(not(target_family = "wasm"))]
     is_new_file: bool,
+    #[cfg(not(target_family = "wasm"))]
+    session_type: Option<DiffSessionType>,
+    #[cfg(not(target_family = "wasm"))]
+    has_saved: bool,
 }
 
 impl InlineDiffView {
@@ -95,6 +101,10 @@ impl InlineDiffView {
             backing_file_id: None,
             #[cfg(not(target_family = "wasm"))]
             is_new_file,
+            #[cfg(not(target_family = "wasm"))]
+            session_type: None,
+            #[cfg(not(target_family = "wasm"))]
+            has_saved: false,
         };
 
         model.apply_diffs_if_any(ctx);
@@ -149,6 +159,7 @@ impl InlineDiffView {
             }
         };
 
+        self.session_type = Some(session_type.clone());
         self.finish_file_registration(file_id, ctx);
     }
 
@@ -166,10 +177,11 @@ impl InlineDiffView {
         self.backing_file_id = Some(file_id);
 
         // Subscribe to FileModel events for this file.
-        ctx.subscribe_to_model(&file_model, move |_me, _file_model, event, ctx| {
+        ctx.subscribe_to_model(&file_model, move |me, _file_model, event, ctx| {
             if file_id == event.file_id() {
                 match event {
                     FileModelEvent::FileSaved { .. } => {
+                        me.has_saved = true;
                         ctx.emit(InlineDiffViewEvent::FileSaved);
                     }
                     FileModelEvent::FailedToSave { error, .. } => {
@@ -213,17 +225,30 @@ impl InlineDiffView {
         });
     }
 
-    /// Saves the current editor content through `FileModel`, returning the
-    /// save's completion future. `FileSaved` / `FailedToSave` events still
-    /// fire alongside. `None` when no file is registered.
+    /// Persists the diff operation with the current editor content. `None` when no file is registered.
     #[cfg(not(target_family = "wasm"))]
     fn save_content(&self, ctx: &mut ViewContext<Self>) -> Option<SaveFuture> {
         let file_id = self.backing_file_id?;
         let content = self.editor.as_ref(ctx).text(ctx).into_string();
         let version = self.editor.as_ref(ctx).version(ctx);
 
-        match FileModel::handle(ctx).update(ctx, |file_model, ctx| {
-            file_model.save(file_id, content, version, ctx)
+        match FileModel::handle(ctx).update(ctx, |file_model, ctx| match &self.diff_type {
+            Some(DiffType::Delete { .. }) => file_model.delete(file_id, version, ctx),
+            Some(DiffType::Update {
+                rename: Some(to), ..
+            }) if StandardizedPath::try_new(&to.to_string_lossy())
+                .ok()
+                .as_ref()
+                != self.file_path.as_ref() =>
+            {
+                file_model.rename_and_save(file_id, to.clone(), content, version, ctx)
+            }
+            Some(DiffType::Update {
+                rename: Some(_), ..
+            }) => file_model.save(file_id, content, version, ctx),
+            Some(DiffType::Create { .. } | DiffType::Update { rename: None, .. }) | None => {
+                file_model.save(file_id, content, version, ctx)
+            }
         }) {
             Ok(save_future) => Some(save_future),
             Err(err) => {
@@ -236,7 +261,7 @@ impl InlineDiffView {
         }
     }
 
-    /// Accepts the diff by saving the editor content to the backing file,
+    /// Accepts the diff by persisting its file operation,
     /// returning the save's completion future. `None` when no file is
     /// registered (WASM / restored conversations), in which case nothing is
     /// dispatched.
@@ -308,7 +333,9 @@ impl DiffViewer for InlineDiffView {
         });
     }
 
-    fn restore_diff_base(&mut self, _ctx: &mut ViewContext<Self>) -> Result<(), String> {
+    fn restore_diff_base(&mut self, ctx: &mut ViewContext<Self>) -> Result<(), String> {
+        #[cfg(target_family = "wasm")]
+        let _ = ctx;
         // No-op when no file is registered (WASM / restored conversations).
         if self.backing_file_id.is_none() {
             return Ok(());
@@ -323,9 +350,9 @@ impl DiffViewer for InlineDiffView {
             if self.is_new_file {
                 // For newly created files, delete instead of restoring. The
                 // delete's completion is observed via `FileSaved` events.
-                let version = self.editor.as_ref(_ctx).version(_ctx);
-                FileModel::handle(_ctx)
-                    .update(_ctx, |file_model, ctx| {
+                let version = self.editor.as_ref(ctx).version(ctx);
+                FileModel::handle(ctx)
+                    .update(ctx, |file_model, ctx| {
                         file_model.delete(file_id, version, ctx)
                     })
                     .map(drop)
@@ -336,19 +363,82 @@ impl DiffViewer for InlineDiffView {
             // For existing files, restore the base content from the editor's DiffModel.
             let base_content = self
                 .editor
-                .as_ref(_ctx)
+                .as_ref(ctx)
                 .model
-                .as_ref(_ctx)
+                .as_ref(ctx)
                 .diff()
-                .as_ref(_ctx)
+                .as_ref(ctx)
                 .base()
                 .ok_or_else(|| "Missing base content".to_string())?
                 .to_string();
 
-            let version = self.editor.as_ref(_ctx).version(_ctx);
+            let version = self.editor.as_ref(ctx).version(ctx);
+            if self.has_saved
+                && let Some(DiffType::Update {
+                    rename: Some(to), ..
+                }) = &self.diff_type
+                && StandardizedPath::try_new(&to.to_string_lossy())
+                    .ok()
+                    .as_ref()
+                    != self.file_path.as_ref()
+            {
+                let file_model = FileModel::handle(ctx);
+                let target_id = file_model.update(ctx, |model, ctx| {
+                    match self
+                        .session_type
+                        .as_ref()
+                        .expect("registered file has a session")
+                    {
+                        DiffSessionType::Local => {
+                            Ok::<_, String>(model.register_file_path(to, false, ctx))
+                        }
+                        DiffSessionType::Remote(host_id) => {
+                            let path = StandardizedPath::try_new(&to.to_string_lossy())
+                                .map_err(|error| error.to_string())?;
+                            Ok(model.register_remote_file(host_id.clone(), path))
+                        }
+                    }
+                })?;
+                ctx.subscribe_to_model(&file_model, move |me, model, event, ctx| {
+                    if event.file_id() != target_id {
+                        return;
+                    }
+                    match event {
+                        FileModelEvent::FileSaved { .. } => {
+                            me.has_saved = false;
+                            ctx.emit(InlineDiffViewEvent::FileSaved);
+                        }
+                        FileModelEvent::FailedToSave { error, .. } => {
+                            ctx.emit(InlineDiffViewEvent::FailedToSave {
+                                error: error.clone(),
+                            });
+                        }
+                        FileModelEvent::FileLoaded { .. }
+                        | FileModelEvent::FailedToLoad { .. }
+                        | FileModelEvent::FileUpdated { .. } => return,
+                    }
+                    model.update(ctx, |model, ctx| model.unsubscribe(target_id, ctx));
+                });
+                let original_path = self.file_path.as_ref().expect("registered file has a path");
+                let result = file_model.update(ctx, |model, ctx| {
+                    model.rename_and_save(
+                        target_id,
+                        PathBuf::from(original_path.as_str()),
+                        base_content,
+                        version,
+                        ctx,
+                    )
+                });
+                if result.is_err() {
+                    file_model.update(ctx, |model, ctx| model.unsubscribe(target_id, ctx));
+                }
+                return result
+                    .map(drop)
+                    .map_err(|error| format!("Failed to restore move: {error}"));
+            }
             // The revert save's completion is observed via `FileSaved` events.
-            FileModel::handle(_ctx)
-                .update(_ctx, |file_model, ctx| {
+            FileModel::handle(ctx)
+                .update(ctx, |file_model, ctx| {
                     file_model.save(file_id, base_content, version, ctx)
                 })
                 .map(drop)
@@ -376,3 +466,7 @@ impl View for InlineDiffView {
 impl TypedActionView for InlineDiffView {
     type Action = ();
 }
+
+#[cfg(all(test, not(target_family = "wasm")))]
+#[path = "inline_diff_tests.rs"]
+mod tests;

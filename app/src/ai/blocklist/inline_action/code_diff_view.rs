@@ -2955,8 +2955,13 @@ impl DiffStorage for CodeDiffView {
                     ..
                 }) = diff_view.diff()
                 {
-                    deleted_paths.push(report_path.clone());
-                    report_path = rename.to_string_lossy().to_string();
+                    let target = StandardizedPath::try_new(&rename.to_string_lossy())
+                        .map(|target| target.to_string())
+                        .unwrap_or_else(|_| rename.to_string_lossy().to_string());
+                    if target != path {
+                        deleted_paths.push(report_path.clone());
+                        report_path = target;
+                    }
                 }
 
                 let changed_lines =
