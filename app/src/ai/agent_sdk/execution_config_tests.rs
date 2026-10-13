@@ -40,6 +40,8 @@ fn execution_mcp_config_preserves_literal_environment_and_headers() {
 fn execution_repositories_keep_individual_origin_policy_and_refs() {
     let resolved = repositories(vec![
         ExecutionRepository {
+            expected_sha: None,
+
             forge: CodeForge::GitHub,
             owner: "owner".into(),
             name: "first".into(),
@@ -48,6 +50,8 @@ fn execution_repositories_keep_individual_origin_policy_and_refs() {
             preserve_origin: true,
         },
         ExecutionRepository {
+            expected_sha: None,
+
             forge: CodeForge::GitLab,
             owner: "owner".into(),
             name: "second".into(),
@@ -74,12 +78,16 @@ fn execution_repositories_keep_individual_origin_policy_and_refs() {
 }
 
 #[test]
-fn execution_deferred_repositories_reject_unknown_forges() {
+fn execution_repositories_reject_unknown_forges() {
     assert!(
-        deferred_repositories(vec![ConfigSourceRepo {
-            code_forge: CodeForge::Unknown,
+        repositories(vec![ExecutionRepository {
+            forge: CodeForge::Unknown,
             owner: "owner".into(),
-            repo: "repo".into(),
+            name: "repo".into(),
+            ref_: None,
+            clone_from: None,
+            expected_sha: None,
+            preserve_origin: true,
         }])
         .is_err()
     );

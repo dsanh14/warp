@@ -2546,11 +2546,17 @@ fn deferred_skill_publication_uses_inventory_after_workspace_consumption() {
                     options.workspace = super::environment::WorkspaceConfiguration::from_resolved(
                         Vec::new(),
                         if has_deferred_repositories {
-                            vec![SourceRepo::new(
-                                CodeForge::GitLab,
-                                "platform/backend".into(),
-                                "api".into(),
-                            )]
+                            vec![super::environment::ResolvedRepository {
+                                source: SourceRepo::new(
+                                    CodeForge::GitLab,
+                                    "platform/backend".into(),
+                                    "api".into(),
+                                ),
+                                checkout: None,
+                                clone_from: None,
+                                expected_sha: None,
+                                preserve_origin: true,
+                            }]
                         } else {
                             Vec::new()
                         },

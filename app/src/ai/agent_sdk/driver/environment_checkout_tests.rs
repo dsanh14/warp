@@ -39,6 +39,8 @@ fn strict_checkout_preserves_existing_work_and_reports_partial_success() {
             let original_refs = git(&target, &["show-ref"]);
             let directory = TempDir::new().unwrap();
             let args = EnvironmentCheckoutArgs {
+                upload_report: false,
+
                 requests_file: directory.path().join("requests.json"),
                 report_file: directory.path().join("report.json"),
                 remove_origins_only: false,
@@ -148,6 +150,8 @@ fn cleanup_only_preserves_refs_and_reports_failures_without_cloning() {
             fs::write(target.join(".git/config.lock"), "").unwrap();
             let directory = TempDir::new().unwrap();
             let args = EnvironmentCheckoutArgs {
+                upload_report: false,
+
                 requests_file: directory.path().join("requests.json"),
                 report_file: directory.path().join("report.json"),
                 remove_origins_only: true,
@@ -277,6 +281,8 @@ fn helper_report_times_every_checkout_and_omits_unresolved_heads() {
             git(&empty, &["init", "--quiet"]);
             let directory = TempDir::new().unwrap();
             let mut args = EnvironmentCheckoutArgs {
+                upload_report: false,
+
                 requests_file: directory.path().join("requests.json"),
                 report_file: directory.path().join("report.json"),
                 remove_origins_only: false,
@@ -1073,6 +1079,8 @@ fn helper_writes_typed_failures_and_rejects_invalid_requests_before_work() {
             );
             let directory = TempDir::new().unwrap();
             let args = EnvironmentCheckoutArgs {
+                upload_report: false,
+
                 requests_file: directory.path().join("requests.json"),
                 report_file: directory.path().join("report.json"),
                 remove_origins_only: false,
@@ -1331,6 +1339,8 @@ fn checkout_traces_report_operation_outcomes_without_request_details() {
             tracing::subscriber::with_default(subscriber, || {
                 let directory = TempDir::new().unwrap();
                 let args = EnvironmentCheckoutArgs {
+                    upload_report: false,
+
                     requests_file: directory.path().join("requests.json"),
                     report_file: directory.path().join("report.json"),
                     remove_origins_only: false,
@@ -1442,6 +1452,8 @@ fn helper_without_handoff_keeps_checkout_working() {
     fixture_test("helper_without_handoff_keeps_checkout_working", |fixture| {
         let directory = TempDir::new().unwrap();
         let args = EnvironmentCheckoutArgs {
+            upload_report: false,
+
             requests_file: directory.path().join("requests.json"),
             report_file: directory.path().join("report.json"),
             remove_origins_only: false,
@@ -1468,6 +1480,8 @@ fn helper_with_expired_handoff_keeps_checkout_working() {
 
             let directory = TempDir::new().unwrap();
             let args = EnvironmentCheckoutArgs {
+                upload_report: false,
+
                 requests_file: directory.path().join("requests.json"),
                 report_file: directory.path().join("report.json"),
                 remove_origins_only: false,
@@ -1509,6 +1523,100 @@ fn helper_with_expired_handoff_keeps_checkout_working() {
 
 const CANONICAL_URL: &str = "https://github.com/fixtures/source.git";
 
+#[test]
+fn lazy_pins_verify_sha_origin_policy_and_never_fall_back() {
+    fixture_test(
+        "lazy_pins_verify_sha_origin_policy_and_never_fall_back",
+        |fixture| {
+            let sha = fixture.pinned();
+            let branch = format!("benchmark-base/{sha}");
+            git(
+                &fixture.origin(),
+                &["update-ref", &format!("refs/heads/{branch}"), &sha],
+            );
+            let mut frozen = fixture.request(
+                "source-name",
+                Some(RepositoryHeadRef::Branch(branch.clone())),
+            );
+            frozen.fetch_branch_only = true;
+            frozen.expected_sha = Some(sha.clone());
+            let mut mismatch = frozen.clone();
+            mismatch.checkout_name = "mismatch".into();
+            mismatch.expected_sha = Some(fixture.base());
+            let mut missing = frozen.clone();
+            missing.checkout_name = "missing".into();
+            missing.head = Some(RepositoryHeadRef::Branch("benchmark-base/absent".into()));
+            let mut source = fixture.request(
+                "source-pin",
+                Some(RepositoryHeadRef::CommitSha(sha.clone())),
+            );
+            source.expected_sha = Some(sha.clone());
+            source.remove_origin = true;
+            let batch = fixture.batch(vec![frozen, mismatch, missing, source]);
+            let directory = TempDir::new().unwrap();
+            let args = EnvironmentCheckoutArgs {
+                requests_file: directory.path().join("requests.json"),
+                report_file: directory.path().join("report.json"),
+                remove_origins_only: false,
+                fail_if_target_exists: true,
+                upload_report: false,
+            };
+            fs::write(&args.requests_file, serde_json::to_vec(&batch).unwrap()).unwrap();
+            assert!(run(&args).is_err());
+            let report: CheckoutReport =
+                serde_json::from_slice(&fs::read(&args.report_file).unwrap()).unwrap();
+            assert_eq!(report.requests.len(), 4);
+            assert_eq!(report.requests[0].checkout_name, "source-name");
+            assert_eq!(report.outcomes[0].failure, None);
+            assert_eq!(
+                report.outcomes[0].resolved_head.as_deref(),
+                Some(sha.as_str())
+            );
+            assert_eq!(
+                report.outcomes[1].failure,
+                Some(CheckoutFailureKind::VerifyHead)
+            );
+            assert_eq!(
+                report.outcomes[1].resolved_head.as_deref(),
+                Some(sha.as_str())
+            );
+            assert_eq!(
+                report.outcomes[2].failure,
+                Some(CheckoutFailureKind::Checkout)
+            );
+            assert_eq!(report.outcomes[3].failure, None);
+            assert_eq!(
+                report.outcomes[3].resolved_head.as_deref(),
+                Some(sha.as_str())
+            );
+            let target = fixture.work().join("source-name");
+            assert_eq!(
+                git(&target, &["config", "--get", "remote.origin.fetch"]),
+                format!("+refs/heads/{branch}:refs/remotes/origin/main")
+            );
+            assert_eq!(git(&target, &["rev-parse", "origin/HEAD"]), sha);
+            assert_eq!(git(&fixture.work().join("source-pin"), &["remote"]), "");
+            assert!(!fixture.mirror().exists());
+            let retry = EnvironmentCheckoutArgs {
+                upload_report: true,
+                ..args
+            };
+            fs::write(
+                &retry.requests_file,
+                serde_json::to_vec(&fixture.batch(Vec::new())).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                run(&retry)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("evidence upload failed")
+            );
+            assert!(retry.report_file.is_file());
+        },
+    );
+}
+
 struct Fixture {
     root: PathBuf,
 }
@@ -1531,6 +1639,9 @@ impl Fixture {
     }
     fn request(&self, name: &str, head: Option<RepositoryHeadRef>) -> CheckoutRequest {
         CheckoutRequest {
+            expected_sha: None,
+            remove_origin: false,
+
             source: RepositoryIdentity {
                 code_forge: RepositoryForge::GitHub,
                 repo_owner: "fixtures".to_owned(),

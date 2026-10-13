@@ -61,7 +61,7 @@ fn paired_execution_launch_keeps_inventory_separate_from_eager_membership() {
         let eager_repository = json!([{
             "forge": "GITHUB", "owner": "acme", "name": "api",
             "ref": {"type": "BRANCH", "value": "feature"},
-            "cloneFrom": null, "preserveOrigin": true,
+            "cloneFrom": null, "preserveOrigin": true, "expectedSha": null,
         }]);
         for (use_factory_repositories, eager, deferred_forge) in [
             (true, json!([]), "GITLAB"),
@@ -77,7 +77,7 @@ fn paired_execution_launch_keeps_inventory_separate_from_eager_membership() {
                 "idleOnCompleteSeconds": null, "idleOnFailSeconds": null,
                 "mcpServersJson": "{}", "skills": [], "factorySkillDirs": [],
                 "computerUseEnabled": false, "repositories": eager,
-                "deferredRepositories": [{
+                "preparedDeferredRepositories": [{"forge": deferred_forge, "owner": "platform/backend", "name": "api", "ref": null, "cloneFrom": null, "expectedSha": null, "preserveOrigin": true}], "deferredRepositories": [{
                     "codeForge": deferred_forge, "owner": "platform/backend", "repo": "api",
                 }],
                 "setupCommands": [], "sessionSharingAcls": [],
@@ -110,7 +110,12 @@ fn paired_execution_launch_keeps_inventory_separate_from_eager_membership() {
             }
             if use_factory_repositories {
                 assert_eq!(
-                    options.workspace.deferred_repos,
+                    options
+                        .workspace
+                        .deferred_repos
+                        .iter()
+                        .map(|repo| repo.source.clone())
+                        .collect::<Vec<_>>(),
                     vec![SourceRepo::new(
                         CodeForge::GitLab,
                         "platform/backend".into(),
@@ -159,7 +164,7 @@ fn deferred_capability_bootstrap_subprocess() {
     } else {
         json!([{
             "forge": "GITLAB", "owner": "platform/backend", "name": "api",
-            "ref": null, "cloneFrom": null, "preserveOrigin": true,
+            "ref": null, "cloneFrom": null, "preserveOrigin": true, "expectedSha": null,
         }])
     };
     let deferred = if scenario == "deferred" {
@@ -175,7 +180,7 @@ fn deferred_capability_bootstrap_subprocess() {
         "idleOnCompleteSeconds": null, "idleOnFailSeconds": null,
         "mcpServersJson": "{}", "skills": [], "factorySkillDirs": [],
         "computerUseEnabled": false, "repositories": eager,
-        "deferredRepositories": deferred,
+        "preparedDeferredRepositories": if scenario == "deferred" { json!([{ "forge": "GITLAB", "owner": "platform/backend", "name": "api", "ref": null, "cloneFrom": null, "expectedSha": null, "preserveOrigin": true }]) } else { json!([]) }, "deferredRepositories": deferred,
         "setupCommands": [], "sessionSharingAcls": [],
         "skipInitialTurn": false, "snapshotDisabled": false,
     });

@@ -170,6 +170,7 @@ impl SpanExporter for RecordingExporter {
 fn handoff_connects_checkout_roots_to_the_spawning_span_without_baggage() {
     let directory = tempfile::tempdir().unwrap();
     let args = EnvironmentCheckoutArgs {
+        upload_report: false,
         requests_file: directory.path().join("requests.json"),
         report_file: directory.path().join("report.json"),
         remove_origins_only: true,
@@ -275,6 +276,7 @@ fn handoff_connects_checkout_roots_to_the_spawning_span_without_baggage() {
 fn authenticated_child_export_flushes_checkout_returns() {
     let directory = tempfile::tempdir().unwrap();
     let args = EnvironmentCheckoutArgs {
+        upload_report: false,
         requests_file: directory.path().join("requests.json"),
         report_file: directory.path().join("report.json"),
         remove_origins_only: true,

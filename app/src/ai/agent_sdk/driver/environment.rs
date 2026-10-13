@@ -241,19 +241,20 @@ fn environment_snapshot(
 #[derive(Default)]
 pub(crate) struct WorkspaceConfiguration {
     pub source_repos: Vec<SourceRepo>,
-    pub deferred_repos: Vec<SourceRepo>,
+    pub deferred_repos: Vec<ResolvedRepository>,
     pub setup_commands: Vec<String>,
     pub factory_skill_dirs: Option<Vec<PathBuf>>,
     pub has_environment: bool,
     clone_requests: Vec<RepositoryCloneRequest>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ResolvedRepository {
     pub source: SourceRepo,
     pub checkout: Option<RepositoryHeadRef>,
     pub clone_from: Option<SourceRepo>,
     pub preserve_origin: bool,
+    pub expected_sha: Option<String>,
 }
 impl WorkspaceConfiguration {
     pub fn from_legacy(
@@ -285,7 +286,7 @@ impl WorkspaceConfiguration {
 
     pub fn from_resolved(
         repositories: Vec<ResolvedRepository>,
-        deferred_repos: Vec<SourceRepo>,
+        deferred_repos: Vec<ResolvedRepository>,
         setup_commands: Vec<String>,
     ) -> Result<Self, PrepareEnvironmentError> {
         let clone_requests = resolved_repository_clone_requests(&repositories)?;
@@ -461,7 +462,7 @@ pub(crate) fn merge_repos_deduped(
 pub(crate) fn build_deferred_repos_instruction(
     working_dir: &Path,
     eager_repos: &[SourceRepo],
-    deferred_repos: &[SourceRepo],
+    deferred_repos: &[ResolvedRepository],
     executable: &Path,
     shell_type: ShellType,
 ) -> Result<Option<String>, PrepareEnvironmentError> {
@@ -471,40 +472,62 @@ pub(crate) fn build_deferred_repos_instruction(
 
     let mut sorted_deferred = deferred_repos.to_vec();
     sorted_deferred.sort_by(|a, b| {
-        a.code_forge
+        a.source
+            .code_forge
             .unwrap_or_default()
             .to_string()
-            .cmp(&b.code_forge.unwrap_or_default().to_string())
-            .then_with(|| a.owner.to_lowercase().cmp(&b.owner.to_lowercase()))
-            .then_with(|| a.repo.to_lowercase().cmp(&b.repo.to_lowercase()))
+            .cmp(&b.source.code_forge.unwrap_or_default().to_string())
+            .then_with(|| {
+                a.source
+                    .owner
+                    .to_lowercase()
+                    .cmp(&b.source.owner.to_lowercase())
+            })
+            .then_with(|| {
+                a.source
+                    .repo
+                    .to_lowercase()
+                    .cmp(&b.source.repo.to_lowercase())
+            })
     });
 
+    let deferred_sources = sorted_deferred
+        .iter()
+        .map(|repo| repo.source.clone())
+        .collect::<Vec<_>>();
     let entries = sorted_deferred
         .iter()
-        .map(|repo| {
+        .map(|prepared| {
+            let repo = &prepared.source;
             let forge = repo.code_forge.unwrap_or_default();
-            let clone_url = repo.https_clone_url();
+            let remote = prepared.clone_from.as_ref().unwrap_or(repo);
+            let clone_url = remote.https_clone_url();
             let identity = format!("{forge} {}/{}", repo.owner, repo.repo);
-            let code_forge = repository_forge_for_repo(repo).ok_or_else(|| {
+            let code_forge = repository_forge_for_repo(remote).ok_or_else(|| {
                 PrepareEnvironmentError::UnsupportedRepositoryForge {
                     repo_name: format!("{}/{}", repo.owner, repo.repo),
                 }
             })?;
-            let request = serde_json::to_string(&CheckoutRequest {
+            let request = CheckoutRequest {
                 source: RepositoryIdentity {
                     code_forge,
-                    repo_owner: repo.owner.clone(),
-                    repo_name: repo.repo.clone(),
+                    repo_owner: remote.owner.clone(),
+                    repo_name: remote.repo.clone(),
                 },
                 checkout_name: repo.repo.clone(),
-                head: None,
-                fetch_branch_only: false,
-            })
+                head: prepared.checkout.clone(),
+                fetch_branch_only: prepared.clone_from.is_some()
+                    && matches!(prepared.checkout, Some(RepositoryHeadRef::Branch(_))),
+                expected_sha: prepared.expected_sha.clone(),
+                remove_origin: !prepared.preserve_origin,
+            };
+            request.validate().map_err(|reason| PrepareEnvironmentError::InvalidRepositoryPreparationOverrides { reason: reason.to_owned() })?;
+            let request = serde_json::to_string(&request)
             .map_err(|_| PrepareEnvironmentError::CheckoutHelper {
                 reason: "could not serialize deferred checkout request",
             })?;
             let target = if let Some(conflicting) =
-                target_name_conflict(repo, eager_repos, &sorted_deferred)
+                target_name_conflict(repo, eager_repos, &deferred_sources)
             {
                 format!(
                     "- {identity} — {clone_url}; target '{}' conflicts with {conflicting}; set checkout_name to an unused single directory name under the workspace root",
@@ -526,7 +549,7 @@ pub(crate) fn build_deferred_repos_instruction(
     );
     let runtime = serde_json::json!({
         "working_dir": working_dir.to_string_lossy(),
-        "command_template": format!("{command} --fail-if-target-exists"),
+        "command_template": format!("{command} --fail-if-target-exists --upload-report"),
     });
 
     Ok(Some(format!(
@@ -962,6 +985,7 @@ pub(super) struct RepositoryCloneRequest {
     pub(super) checkout: Option<RepositoryHeadRef>,
     pub(super) remove_origin: bool,
     pub(super) fetch_branch_only: bool,
+    pub(super) expected_sha: Option<String>,
 }
 
 fn repository_clone_requests(
@@ -1001,6 +1025,7 @@ fn repository_clone_requests(
                     preparation_override.clone_from.is_some()
                         && matches!(preparation_override.head, RepositoryHeadRef::Branch(_))
                 }),
+                expected_sha: None,
             })
         })
         .collect()
@@ -1033,6 +1058,7 @@ fn resolved_repository_clone_requests(
                 remove_origin: !repo.preserve_origin,
                 fetch_branch_only: repo.clone_from.is_some()
                     && matches!(repo.checkout, Some(RepositoryHeadRef::Branch(_))),
+                expected_sha: repo.expected_sha.clone(),
             })
         })
         .collect()
@@ -1226,6 +1252,8 @@ fn checkout_requests_batch(
                     checkout_name: request.checkout_name.clone(),
                     head: request.checkout.clone(),
                     fetch_branch_only: request.fetch_branch_only,
+                    expected_sha: request.expected_sha.clone(),
+                    remove_origin: false,
                 })
             })
             .collect::<Result<Vec<_>, PrepareEnvironmentError>>()?,

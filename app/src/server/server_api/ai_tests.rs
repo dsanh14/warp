@@ -52,7 +52,7 @@ fn execution_bootstrap_response() -> Value {
                         "computerUseModelId": null,
                         "inferenceProviders": null,
                         "repositories": [],
-                        "deferredRepositories": [{
+                        "preparedDeferredRepositories": [], "deferredRepositories": [{
                             "codeForge": "GITLAB", "owner": "platform/backend", "repo": "api"
                         }],
                         "setupCommands": [],
@@ -123,7 +123,7 @@ fn execution_bootstrap_fetches_config_secrets_and_attachments_once() {
             let config = &mut response["data"]["task"]["task"]["executionConfig"];
             config["repositories"] = json!([{
                 "forge": "GITLAB", "owner": "platform/backend", "name": "api",
-                "ref": null, "cloneFrom": null, "preserveOrigin": true,
+                            "ref": null, "cloneFrom": null, "preserveOrigin": true, "expectedSha": null
             }]);
             config["deferredRepositories"] = json!([]);
         }
