@@ -2204,21 +2204,25 @@ impl AppContext {
         // A binding the user has explicitly rebound takes precedence over the default bindings of
         // views deeper in the responder chain. Otherwise rebinding an action to a keystroke that a
         // focused child view binds by default (e.g. the text selection keys of an input editor)
-        // would silently never trigger the action.
+        // would silently never trigger the action. The same goes for the first keystroke of a
+        // customized chord, which is swallowed so that a child's default binding doesn't act on it.
         for (i, ctx) in context_chain.iter().enumerate().rev() {
-            if let Some(action) = self.keystroke_matcher.match_customized_keystroke(
+            match self.keystroke_matcher.match_customized_keystroke(
                 keystroke,
                 responder_chain[i],
                 ctx,
             ) {
-                self.keystroke_matcher.clear_pending(responder_chain[i]);
-                if self.dispatch_typed_action(
-                    window_id,
-                    &responder_chain[0..=i],
-                    action.as_ref(),
-                    log::Level::Info,
-                ) {
-                    return Ok(true);
+                MatchResult::None => {}
+                MatchResult::Pending => return Ok(true),
+                MatchResult::Action(action) => {
+                    if self.dispatch_typed_action(
+                        window_id,
+                        &responder_chain[0..=i],
+                        action.as_ref(),
+                        log::Level::Info,
+                    ) {
+                        return Ok(true);
+                    }
                 }
             }
         }

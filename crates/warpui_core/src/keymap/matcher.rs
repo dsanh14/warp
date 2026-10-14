@@ -343,39 +343,57 @@ impl Matcher {
         }
     }
 
-    /// Returns the action of a binding whose trigger the user has customized, if the keystrokes
-    /// pending for `view_id` followed by `keystroke` complete that trigger in `ctx`.
+    /// Matches `keystroke` (after any keystrokes pending for `view_id`) against only the bindings
+    /// whose trigger the user has customized.
     ///
-    /// Unlike [`Self::push_keystroke`], this does not record the keystroke as pending; callers
-    /// that dispatch the returned action should call [`Self::clear_pending`].
+    /// Returns [`MatchResult::Action`] if a customized trigger is completed, and
+    /// [`MatchResult::Pending`] if the keystrokes are a proper prefix of a customized chord; in
+    /// that case the keystroke is recorded as pending for `view_id`, as in
+    /// [`Self::push_keystroke`]. Any pending state is cleared when an action is returned.
     pub fn match_customized_keystroke(
-        &self,
+        &mut self,
         keystroke: &Keystroke,
         view_id: EntityId,
         ctx: &Context,
-    ) -> Option<Arc<dyn Action>> {
-        let pending = self
+    ) -> MatchResult {
+        let mut keystrokes: Vec<Keystroke> = self
             .pending
             .get(&view_id)
             .filter(|pending| pending.context.as_ref() == Some(ctx))
-            .map_or(&[][..], |pending| pending.keystrokes.as_slice());
-        self.keymap
-            .bindings()
-            .filter(|binding| binding.original_trigger.is_some())
-            .find(|binding| {
-                let Trigger::Keystrokes(keystrokes) = &binding.trigger else {
-                    return false;
-                };
-                keystrokes.len() == pending.len() + 1
-                    && keystrokes.starts_with(pending)
-                    && keystrokes[pending.len()] == *keystroke
-                    && binding.context_predicate.eval(ctx)
-            })
-            .map(|binding| binding.action.clone())
-    }
+            .map(|pending| pending.keystrokes.clone())
+            .unwrap_or_default();
+        keystrokes.push(keystroke.clone());
 
-    pub fn clear_pending(&mut self, view_id: EntityId) {
-        self.pending.remove(&view_id);
+        let mut is_prefix = false;
+        for binding in self.keymap.bindings() {
+            if binding.original_trigger.is_none() {
+                continue;
+            }
+            let Trigger::Keystrokes(trigger) = &binding.trigger else {
+                continue;
+            };
+            if !trigger.starts_with(&keystrokes) || !binding.context_predicate.eval(ctx) {
+                continue;
+            }
+            if trigger.len() == keystrokes.len() {
+                self.pending.remove(&view_id);
+                return MatchResult::Action(binding.action.clone());
+            }
+            is_prefix = true;
+        }
+
+        if is_prefix {
+            self.pending.insert(
+                view_id,
+                Pending {
+                    keystrokes,
+                    context: Some(ctx.clone()),
+                },
+            );
+            MatchResult::Pending
+        } else {
+            MatchResult::None
+        }
     }
 
     // Attempt to match with a StandardAction.
